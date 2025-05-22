@@ -1,53 +1,80 @@
-
 import streamlit as st
 import pandas as pd
 import requests
 
-st.set_page_config(page_title="Envío Masivo WhatsApp", layout="centered")
+st.set_page_config(page_title="Envío Masivo de WhatsApp", layout="centered")
 
-st.title("📤 Envío Masivo de WhatsApp con Excel")
+st.title("📨 Envío Masivo de WhatsApp con Excel")
 
+# Ingresar API Key
 api_key = st.text_input("🔐 Ingresa tu API Key de 360dialog", type="password")
-endpoint = "https://waba-v2.360dialog.io/messages"
 
-uploaded_file = st.file_uploader("📎 Sube tu archivo Excel con los contactos", type=["xlsx"])
+# Cargar archivo Excel
+st.subheader("📁 Sube tu archivo Excel con los contactos")
+file = st.file_uploader("Drag and drop o haz clic para subir (.xlsx)", type=["xlsx"])
 
-if uploaded_file and api_key:
-    df = pd.read_excel(uploaded_file)
-
+if file:
+    df = pd.read_excel(file)
     st.success(f"Archivo cargado con {len(df)} filas.")
-    plantilla_col = st.selectbox("🧩 Columna que contiene el nombre de la plantilla:", df.columns)
-    telefono_col = st.selectbox("📱 Columna de teléfono:", df.columns)
-    pais_col = st.selectbox("🌎 Columna del código de país:", df.columns)
 
-    param_cols = [col for col in df.columns if col.startswith("{{")]
+    # Mostrar columnas disponibles
+    columns = df.columns.tolist()
+    plantilla = st.selectbox("🧩 Columna con el nombre de la plantilla:", columns)
+    telefono_col = st.selectbox("📱 Columna del teléfono:", columns)
+    pais_col = st.selectbox("🌎 Columna del código de país:", columns)
+
+    # Parámetros opcionales
+    param1 = st.selectbox("🔢 Parámetro {{1}}:", ["(ninguno)"] + columns)
+    param2 = st.selectbox("🔢 Parámetro {{2}} (opcional):", ["(ninguno)"] + columns)
 
     if st.button("🚀 Enviar mensajes"):
-        headers = {
-            "Authorization": f"Bearer {api_key}",
-            "Content-Type": "application/json"
-        }
-        for i, row in df.iterrows():
-            numero = f"{row[pais_col]}{row[telefono_col]}"
-            plantilla = row[plantilla_col]
-            componentes = []
-            if param_cols:
-                componentes.append({
-                    "type": "body",
-                    "parameters": [{"type": "text", "text": str(row[param])} for param in param_cols]
+        if not api_key:
+            st.error("⚠️ Debes ingresar una API Key.")
+            st.stop()
+
+        for idx, row in df.iterrows():
+            to_number = f"{row[pais_col]}{row[telefono_col]}"
+            template_name = row[plantilla]
+            language = "es_MX"
+
+            components = [{
+                "type": "body",
+                "parameters": []
+            }]
+
+            if param1 != "(ninguno)":
+                components[0]["parameters"].append({
+                    "type": "text",
+                    "text": str(row[param1])
                 })
+
+            if param2 != "(ninguno)":
+                components[0]["parameters"].append({
+                    "type": "text",
+                    "text": str(row[param2])
+                })
+
             payload = {
                 "messaging_product": "whatsapp",
-                "to": numero,
+                "to": to_number,
                 "type": "template",
                 "template": {
-                    "name": plantilla,
-                    "language": {"code": "es_MX"},
-                    "components": componentes
+                    "name": template_name,
+                    "language": {
+                        "code": language
+                    },
+                    "components": components
                 }
             }
-            response = requests.post(endpoint, headers=headers, json=payload)
+
+            headers = {
+                "Content-Type": "application/json",
+                "D360-API-KEY": api_key
+            }
+
+            response = requests.post("https://waba-v2.360dialog.io/messages", headers=headers, json=payload)
+
             if response.status_code == 200:
-                st.write(f"✅ Enviado a {numero}")
+                st.success(f"✅ Mensaje enviado a {to_number}")
             else:
-                st.write(f"❌ Error con {numero}: {response.text}")
+                st.error(f"❌ Error con {to_number}: {response.text}")

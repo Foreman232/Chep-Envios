@@ -24,7 +24,7 @@ if file:
     pais_col = st.selectbox("🌎 Columna del código de país:", columns)
 
     # Parámetros opcionales
-    param1 = st.selectbox("🔢 Parámetro {{1}}:", ["(ninguno)"] + columns)
+    param1 = st.selectbox("🔢 Parámetro {{1}} (Nombre del cliente):", columns)
     param2 = st.selectbox("🔢 Parámetro {{2}} (opcional):", ["(ninguno)"] + columns)
 
     if st.button("🚀 Enviar mensajes"):
@@ -34,7 +34,7 @@ if file:
 
         for idx, row in df.iterrows():
             to_number = f"{row[pais_col]}{row[telefono_col]}"
-            template_name = row[plantilla]
+            template_name = row[nombre_plantilla]  # Aquí se usa el nombre de la plantilla
             language = "es_MX"
 
             components = [{
@@ -42,12 +42,13 @@ if file:
                 "parameters": []
             }]
 
-            if param1 != "(ninguno)":
-                components[0]["parameters"].append({
-                    "type": "text",
-                    "text": str(row[param1])
-                })
+            # Reemplazar {{1}} con el nombre del cliente (de la columna `plantilla`)
+            components[0]["parameters"].append({
+                "type": "text",
+                "text": str(row[plantilla])  # Aquí se pasa el valor de la columna `plantilla` como el nombre del cliente
+            })
 
+            # Si hay un segundo parámetro, agregarlo
             if param2 != "(ninguno)":
                 components[0]["parameters"].append({
                     "type": "text",
@@ -59,7 +60,7 @@ if file:
                 "to": to_number,
                 "type": "template",
                 "template": {
-                    "name": template_name,
+                    "name": template_name,  # Aquí se usa el valor de la columna `nombre_plantilla` que es el nombre de la plantilla activa
                     "language": {
                         "code": language
                     },

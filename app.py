@@ -17,6 +17,12 @@ if file:
     df = pd.read_excel(file)
     st.success(f"Archivo cargado con {len(df)} filas.")
 
+    # Verificar las columnas
+    st.write(df.columns)  # Esto imprimirá los nombres de todas las columnas
+
+    # Limpiar espacios de las columnas (si existen)
+    df.columns = df.columns.str.strip()
+
     # Mostrar columnas disponibles
     columns = df.columns.tolist()
     plantilla = st.selectbox("🧩 Columna con el nombre de la plantilla:", columns)
@@ -34,7 +40,7 @@ if file:
 
         for idx, row in df.iterrows():
             to_number = f"{row[pais_col]}{row[telefono_col]}"
-            template_name = row[nombre_plantilla]  # Aquí se usa el nombre de la plantilla
+            template_name = row["nombre_plantilla"]  # Usamos comillas para asegurar que se accede correctamente
             language = "es_MX"
 
             components = [{

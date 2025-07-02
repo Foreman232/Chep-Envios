@@ -18,18 +18,14 @@ if file:
     st.success(f"Archivo cargado con {len(df)} filas.")
 
     # Verificar las columnas
-    st.write(df.columns)  # Esto imprimirá los nombres de todas las columnas
-
-    # Limpiar espacios de las columnas (si existen)
+    st.write(df.columns)
     df.columns = df.columns.str.strip()
 
-    # Mostrar columnas disponibles
     columns = df.columns.tolist()
     plantilla = st.selectbox("🧩 Columna con el nombre de la plantilla:", columns)
     telefono_col = st.selectbox("📱 Columna del teléfono:", columns)
     pais_col = st.selectbox("🌎 Columna del código de país:", columns)
 
-    # Parámetros opcionales
     param1 = st.selectbox("🔢 Parámetro {{1}} (Nombre del cliente):", columns)
     param2 = st.selectbox("🔢 Parámetro {{2}} (opcional):", ["(ninguno)"] + columns)
 
@@ -48,13 +44,11 @@ if file:
                 "parameters": []
             }]
 
-            # Reemplazar {{1}} con el nombre del cliente
             components[0]["parameters"].append({
                 "type": "text",
                 "text": str(row[plantilla])
             })
 
-            # Agregar segundo parámetro si aplica
             if param2 != "(ninguno)":
                 components[0]["parameters"].append({
                     "type": "text",
@@ -84,14 +78,13 @@ if file:
             if response.status_code == 200:
                 st.success(f"✅ Mensaje enviado a {to_number}")
 
-                # ✅ Reflejar mensaje también en Chatwoot como entrante
+                # ✅ Reflejar como saliente en Chatwoot
                 try:
                     to_number_plus = f"+{to_number}"
                     chatwoot_token = "vP4SkyT1VZZVNsYTE6U6xjxP"
                     base_url = "https://srv870442.hstgr.cloud/api/v1/accounts/1"
                     headers_cw = {"api_access_token": chatwoot_token}
 
-                    # 1. Buscar o crear contacto
                     contact_payload = {
                         "identifier": to_number_plus,
                         "name": str(row[param1]),
@@ -106,7 +99,6 @@ if file:
                     else:
                         contact_id = r.json()["payload"]["id"]
 
-                    # 2. Obtener o crear conversación
                     r_conv = requests.get(f"{base_url}/contacts/{contact_id}/conversations", headers=headers_cw)
                     if r_conv.json()["payload"]:
                         conversation_id = r_conv.json()["payload"][0]["id"]
@@ -117,17 +109,16 @@ if file:
                         }, headers=headers_cw)
                         conversation_id = r_conv.json()["id"]
 
-                    # 3. Enviar mensaje a Chatwoot como "incoming"
                     msg_text = payload["template"]["components"][0]["parameters"][0]["text"]
                     msg_payload = {
                         "content": msg_text,
-                        "message_type": "incoming",
+                        "message_type": "outgoing",
                         "private": False
                     }
                     requests.post(f"{base_url}/conversations/{conversation_id}/messages", json=msg_payload, headers=headers_cw)
 
                 except Exception as e:
-                    st.warning(f"⚠️ El mensaje se envió a WhatsApp, pero falló en Chatwoot: {e}")
+                    st.warning(f"⚠️ Enviado a WhatsApp, pero falló en Chatwoot (saliente): {e}")
 
             else:
                 st.error(f"❌ Error con {to_number}: {response.text}")

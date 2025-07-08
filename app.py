@@ -1,92 +1,116 @@
-import streamlit as st
-import pandas as pd
-import requests
+const express = require('express');
+const bodyParser = require('body-parser');
+const axios = require('axios');
 
-st.set_page_config(page_title="Envío Masivo de WhatsApp", layout="centered")
-st.title("📨 Envío Masivo de WhatsApp con Excel")
+const app = express();
+app.use(bodyParser.json());
 
-api_key = st.text_input("🔐 Ingresa tu API Key de 360dialog", type="password")
+const CHATWOOT_API_TOKEN = 'vP4SkyT1VZZVNsYTE6U6xjxP';
+const CHATWOOT_ACCOUNT_ID = '1';
+const CHATWOOT_INBOX_ID = '1';
+const BASE_URL = 'https://srv870442.hstgr.cloud/api/v1/accounts';
+const N8N_WEBHOOK_URL = 'https://n8n.srv869869.hstgr.cloud/webhook-test/02cfb95c-e80b-4a83-ad98-35a8fe2fb2fb';
 
-st.subheader("📁 Sube tu archivo Excel con los contactos")
-file = st.file_uploader("Arrastra o haz clic para subir (.xlsx)", type=["xlsx"])
+async function findOrCreateContact(phone, name = 'Cliente WhatsApp') {
+  const identifier = `${phone}`;
+  const payload = {
+    inbox_id: CHATWOOT_INBOX_ID,
+    name,
+    identifier,
+    phone_number: identifier
+  };
+  try {
+    const response = await axios.post(`${BASE_URL}/${CHATWOOT_ACCOUNT_ID}/contacts`, payload, {
+      headers: { api_access_token: CHATWOOT_API_TOKEN }
+    });
+    return response.data.payload;
+  } catch (err) {
+    if (err.response?.data?.message?.includes('has already been taken')) {
+      const getResp = await axios.get(`${BASE_URL}/${CHATWOOT_ACCOUNT_ID}/contacts/search?q=${identifier}`, {
+        headers: { api_access_token: CHATWOOT_API_TOKEN }
+      });
+      return getResp.data.payload[0];
+    }
+    console.error('❌ Contacto error:', err.message);
+    return null;
+  }
+}
 
-if file:
-    df = pd.read_excel(file)
-    st.success(f"Archivo cargado con {len(df)} filas.")
-    df.columns = df.columns.str.strip()
+async function linkContactToInbox(contactId, phone) {
+  try {
+    const response = await axios.post(`${BASE_URL}/${CHATWOOT_ACCOUNT_ID}/contacts/${contactId}/contact_inboxes`, {
+      inbox_id: CHATWOOT_INBOX_ID,
+      source_id: `${phone}`
+    }, {
+      headers: { api_access_token: CHATWOOT_API_TOKEN }
+    });
+    return response.data.payload.id; // 👈 ID del contact_inbox necesario
+  } catch (err) {
+    if (err.response?.data?.message?.includes('has already been taken')) {
+      const inboxes = await axios.get(`${BASE_URL}/${CHATWOOT_ACCOUNT_ID}/contacts/${contactId}/contact_inboxes`, {
+        headers: { api_access_token: CHATWOOT_API_TOKEN }
+      });
+      return inboxes.data.payload.find(ci => ci.inbox_id === parseInt(CHATWOOT_INBOX_ID))?.id;
+    } else {
+      console.error('❌ Inbox link error:', err.message);
+      return null;
+    }
+  }
+}
 
-    columns = df.columns.tolist()
-    plantilla_col = st.selectbox("🧩 Columna con el nombre de la plantilla:", columns)
-    telefono_col = st.selectbox("📱 Columna del teléfono:", columns)
-    pais_col = st.selectbox("🌎 Columna del código de país:", columns)
+async function getOrCreateConversation(contactInboxId) {
+  try {
+    const convRes = await axios.get(`${BASE_URL}/${CHATWOOT_ACCOUNT_ID}/contact_inboxes/${contactInboxId}/conversations`, {
+      headers: { api_access_token: CHATWOOT_API_TOKEN }
+    });
+    if (convRes.data.payload.length > 0) return convRes.data.payload[0].id;
 
-    param1 = st.selectbox("🔢 Parámetro {{1}} (Nombre del cliente):", columns)
-    param2 = st.selectbox("🔢 Parámetro {{2}} (opcional):", ["(ninguno)"] + columns)
+    const newConv = await axios.post(`${BASE_URL}/${CHATWOOT_ACCOUNT_ID}/contact_inboxes/${contactInboxId}/conversations`, {}, {
+      headers: { api_access_token: CHATWOOT_API_TOKEN }
+    });
+    return newConv.data.id;
+  } catch (err) {
+    console.error('❌ Error creando conversación:', err.message);
+    return null;
+  }
+}
 
-    if st.button("🚀 Enviar mensajes"):
-        if not api_key:
-            st.error("⚠️ Debes ingresar una API Key.")
-            st.stop()
+async function sendToChatwoot(conversationId, type, content) {
+  try {
+    const payload = {
+      content,
+      message_type: 'incoming',
+      private: false
+    };
+    await axios.post(`${BASE_URL}/${CHATWOOT_ACCOUNT_ID}/conversations/${conversationId}/messages`, payload, {
+      headers: { api_access_token: CHATWOOT_API_TOKEN }
+    });
+  } catch (err) {
+    console.error('❌ Error enviando a Chatwoot:', err.message);
+  }
+}
 
-        for idx, row in df.iterrows():
-            try:
-                to_number = f"{row[pais_col]}{row[telefono_col]}"
-                template_name = row[plantilla_col]
-                language = "es_MX"
+app.post('/send-chatwoot-message', async (req, res) => {
+  const { phone, name, message } = req.body;
+  if (!phone || !message) return res.status(400).send('Falta teléfono o mensaje');
 
-                parameters = [{
-                    "type": "text",
-                    "text": str(row[param1]) if not pd.isna(row[param1]) else ""
-                }]
-                if param2 != "(ninguno)" and not pd.isna(row[param2]):
-                    parameters.append({
-                        "type": "text",
-                        "text": str(row[param2])
-                    })
+  try {
+    const contact = await findOrCreateContact(phone, name || 'Cliente');
+    if (!contact) return res.status(500).send('No se pudo crear contacto');
 
-                payload = {
-                    "messaging_product": "whatsapp",
-                    "to": to_number,
-                    "type": "template",
-                    "template": {
-                        "name": template_name,
-                        "language": {
-                            "code": language
-                        },
-                        "components": [{
-                            "type": "body",
-                            "parameters": parameters
-                        }]
-                    }
-                }
+    const contactInboxId = await linkContactToInbox(contact.id, phone);
+    if (!contactInboxId) return res.status(500).send('No se pudo obtener contact_inbox');
 
-                headers = {
-                    "Content-Type": "application/json",
-                    "D360-API-KEY": api_key
-                }
+    const conversationId = await getOrCreateConversation(contactInboxId);
+    if (!conversationId) return res.status(500).send('No se pudo crear conversación');
 
-                response = requests.post("https://waba-v2.360dialog.io/messages", headers=headers, json=payload)
+    await sendToChatwoot(conversationId, 'text', message);
+    res.sendStatus(200);
+  } catch (err) {
+    console.error('❌ Error en /send-chatwoot-message:', err.message);
+    res.status(500).send('Error reflejando mensaje en Chatwoot');
+  }
+});
 
-                if response.status_code == 200:
-                    st.success(f"✅ Mensaje enviado a {to_number}")
-
-                    # Reflejar mensaje en Chatwoot
-                    msg_text = " ".join([p["text"] for p in parameters])
-                    cw_payload = {
-                        "phone": to_number,
-                        "name": str(row[param1]) if not pd.isna(row[param1]) else "Cliente WhatsApp",
-                        "message": msg_text
-                    }
-                    try:
-                        cw_response = requests.post("https://srv870442.hstgr.cloud/send-chatwoot-message", json=cw_payload)
-                        if cw_response.status_code == 200:
-                            st.info("💬 Reflejado en Chatwoot")
-                        else:
-                            st.warning(f"⚠️ Enviado a WhatsApp, pero Chatwoot falló ({cw_response.status_code})")
-                    except Exception as e:
-                        st.warning(f"⚠️ WhatsApp enviado, pero Chatwoot falló: {e}")
-                else:
-                    st.error(f"❌ Error con {to_number}: {response.text}")
-
-            except Exception as general_err:
-                st.error(f"❌ Error procesando fila {idx + 1}: {general_err}")
+const PORT = process.env.PORT || 10000;
+app.listen(PORT, () => console.log(`🚀 Webhook corriendo en puerto ${PORT}`));

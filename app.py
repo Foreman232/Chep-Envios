@@ -29,56 +29,64 @@ if file:
             st.stop()
 
         for idx, row in df.iterrows():
-            to_number = f"{row[pais_col]}{row[telefono_col]}"
-            template_name = row[plantilla_col]
-            language = "es_MX"
+            try:
+                to_number = f"{row[pais_col]}{row[telefono_col]}"
+                template_name = row[plantilla_col]
+                language = "es_MX"
 
-            parameters = [{
-                "type": "text",
-                "text": str(row[param1])
-            }]
-            if param2 != "(ninguno)":
-                parameters.append({
+                parameters = [{
                     "type": "text",
-                    "text": str(row[param2])
-                })
-
-            payload = {
-                "messaging_product": "whatsapp",
-                "to": to_number,
-                "type": "template",
-                "template": {
-                    "name": template_name,
-                    "language": {
-                        "code": language
-                    },
-                    "components": [{
-                        "type": "body",
-                        "parameters": parameters
-                    }]
-                }
-            }
-
-            headers = {
-                "Content-Type": "application/json",
-                "D360-API-KEY": api_key
-            }
-
-            response = requests.post("https://waba-v2.360dialog.io/messages", headers=headers, json=payload)
-
-            if response.status_code == 200:
-                st.success(f"✅ Mensaje enviado a {to_number}")
-
-                # Reflejar mensaje en Chatwoot vía endpoint de tu servidor
-                msg_text = " ".join([p["text"] for p in parameters])
-                try:
-                    requests.post("https://srv870442.hstgr.cloud/send-chatwoot-message", json={
-                        "phone": to_number,
-                        "name": str(row[param1]),
-                        "message": msg_text
+                    "text": str(row[param1]) if not pd.isna(row[param1]) else ""
+                }]
+                if param2 != "(ninguno)" and not pd.isna(row[param2]):
+                    parameters.append({
+                        "type": "text",
+                        "text": str(row[param2])
                     })
-                except Exception as e:
-                    st.warning(f"⚠️ WhatsApp enviado, pero Chatwoot falló: {e}")
 
-            else:
-                st.error(f"❌ Error con {to_number}: {response.text}")
+                payload = {
+                    "messaging_product": "whatsapp",
+                    "to": to_number,
+                    "type": "template",
+                    "template": {
+                        "name": template_name,
+                        "language": {
+                            "code": language
+                        },
+                        "components": [{
+                            "type": "body",
+                            "parameters": parameters
+                        }]
+                    }
+                }
+
+                headers = {
+                    "Content-Type": "application/json",
+                    "D360-API-KEY": api_key
+                }
+
+                response = requests.post("https://waba-v2.360dialog.io/messages", headers=headers, json=payload)
+
+                if response.status_code == 200:
+                    st.success(f"✅ Mensaje enviado a {to_number}")
+
+                    # Reflejar mensaje en Chatwoot
+                    msg_text = " ".join([p["text"] for p in parameters])
+                    cw_payload = {
+                        "phone": to_number,
+                        "name": str(row[param1]) if not pd.isna(row[param1]) else "Cliente WhatsApp",
+                        "message": msg_text
+                    }
+                    try:
+                        cw_response = requests.post("https://srv870442.hstgr.cloud/send-chatwoot-message", json=cw_payload)
+                        if cw_response.status_code == 200:
+                            st.info("💬 Reflejado en Chatwoot")
+                        else:
+                            st.warning(f"⚠️ Enviado a WhatsApp, pero Chatwoot falló ({cw_response.status_code})")
+                    except Exception as e:
+                        st.warning(f"⚠️ WhatsApp enviado, pero Chatwoot falló: {e}")
+                else:
+                    st.error(f"❌ Error con {to_number}: {response.text}")
+
+            except Exception as general_err:
+                st.error(f"❌ Error procesando fila {idx + 1}: {general_err}")

@@ -1,16 +1,14 @@
-iimport streamlit as st
+import streamlit as st
 import pandas as pd
 import requests
 
 st.set_page_config(page_title="Envío Masivo de WhatsApp", layout="centered")
 st.title("📨 Envío Masivo de WhatsApp con Excel")
 
-# Ingresar API Key
 api_key = st.text_input("🔐 Ingresa tu API Key de 360dialog", type="password")
 
-# Cargar archivo Excel
 st.subheader("📁 Sube tu archivo Excel con los contactos")
-file = st.file_uploader("Drag and drop o haz clic para subir (.xlsx)", type=["xlsx"])
+file = st.file_uploader("Arrastra o haz clic para subir (.xlsx)", type=["xlsx"])
 
 if file:
     df = pd.read_excel(file)
@@ -35,7 +33,6 @@ if file:
             template_name = row[plantilla_col]
             language = "es_MX"
 
-            # Construir parámetros del mensaje
             parameters = [{
                 "type": "text",
                 "text": str(row[param1])
@@ -46,7 +43,6 @@ if file:
                     "text": str(row[param2])
                 })
 
-            # Preparar payload de 360dialog
             payload = {
                 "messaging_product": "whatsapp",
                 "to": to_number,
@@ -73,27 +69,16 @@ if file:
             if response.status_code == 200:
                 st.success(f"✅ Mensaje enviado a {to_number}")
 
-                # Preparar mensaje como texto plano para reflejarlo en Chatwoot
+                # Reflejar mensaje en Chatwoot vía endpoint de tu servidor
                 msg_text = " ".join([p["text"] for p in parameters])
-
-                # Llamar al endpoint de tu backend Node.js (index.js)
-                chatwoot_reflect = {
-                    "phone": to_number,
-                    "name": str(row[param1]),
-                    "message": msg_text
-                }
-
                 try:
-                    cw_response = requests.post(
-                        "https://chep-tarimas.store/send-chatwoot-message",  # ✅ cambia si tu endpoint es otro
-                        json=chatwoot_reflect
-                    )
-                    if cw_response.status_code == 200:
-                        st.info("✉️ Reflejado en Chatwoot.")
-                    else:
-                        st.warning(f"⚠️ Enviado a WhatsApp, pero falló en Chatwoot ({cw_response.status_code})")
+                    requests.post("https://srv870442.hstgr.cloud/send-chatwoot-message", json={
+                        "phone": to_number,
+                        "name": str(row[param1]),
+                        "message": msg_text
+                    })
                 except Exception as e:
-                    st.warning(f"⚠️ Enviado a WhatsApp, pero falló en Chatwoot: {e}")
+                    st.warning(f"⚠️ WhatsApp enviado, pero Chatwoot falló: {e}")
 
             else:
                 st.error(f"❌ Error con {to_number}: {response.text}")

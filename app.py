@@ -1,9 +1,8 @@
-import streamlit as st
+iimport streamlit as st
 import pandas as pd
 import requests
 
 st.set_page_config(page_title="Envío Masivo de WhatsApp", layout="centered")
-
 st.title("📨 Envío Masivo de WhatsApp con Excel")
 
 # Ingresar API Key
@@ -16,13 +15,10 @@ file = st.file_uploader("Drag and drop o haz clic para subir (.xlsx)", type=["xl
 if file:
     df = pd.read_excel(file)
     st.success(f"Archivo cargado con {len(df)} filas.")
-
-    # Verificar las columnas
-    st.write(df.columns)
     df.columns = df.columns.str.strip()
 
     columns = df.columns.tolist()
-    plantilla = st.selectbox("🧩 Columna con el nombre de la plantilla:", columns)
+    plantilla_col = st.selectbox("🧩 Columna con el nombre de la plantilla:", columns)
     telefono_col = st.selectbox("📱 Columna del teléfono:", columns)
     pais_col = st.selectbox("🌎 Columna del código de país:", columns)
 
@@ -36,25 +32,21 @@ if file:
 
         for idx, row in df.iterrows():
             to_number = f"{row[pais_col]}{row[telefono_col]}"
-            template_name = row["nombre_plantilla"]
+            template_name = row[plantilla_col]
             language = "es_MX"
 
-            components = [{
-                "type": "body",
-                "parameters": []
-            }]
-
-            components[0]["parameters"].append({
+            # Construir parámetros del mensaje
+            parameters = [{
                 "type": "text",
-                "text": str(row[plantilla])
-            })
-
+                "text": str(row[param1])
+            }]
             if param2 != "(ninguno)":
-                components[0]["parameters"].append({
+                parameters.append({
                     "type": "text",
                     "text": str(row[param2])
                 })
 
+            # Preparar payload de 360dialog
             payload = {
                 "messaging_product": "whatsapp",
                 "to": to_number,
@@ -64,7 +56,10 @@ if file:
                     "language": {
                         "code": language
                     },
-                    "components": components
+                    "components": [{
+                        "type": "body",
+                        "parameters": parameters
+                    }]
                 }
             }
 
@@ -78,47 +73,27 @@ if file:
             if response.status_code == 200:
                 st.success(f"✅ Mensaje enviado a {to_number}")
 
-                # ✅ Reflejar como saliente en Chatwoot
+                # Preparar mensaje como texto plano para reflejarlo en Chatwoot
+                msg_text = " ".join([p["text"] for p in parameters])
+
+                # Llamar al endpoint de tu backend Node.js (index.js)
+                chatwoot_reflect = {
+                    "phone": to_number,
+                    "name": str(row[param1]),
+                    "message": msg_text
+                }
+
                 try:
-                    to_number_plus = f"+{to_number}"
-                    chatwoot_token = "vP4SkyT1VZZVNsYTE6U6xjxP"
-                    base_url = "https://srv870442.hstgr.cloud/api/v1/accounts/1"
-                    headers_cw = {"api_access_token": chatwoot_token}
-
-                    contact_payload = {
-                        "identifier": to_number_plus,
-                        "name": str(row[param1]),
-                        "phone_number": to_number_plus,
-                        "inbox_id": 1
-                    }
-                    r = requests.post(f"{base_url}/contacts", json=contact_payload, headers=headers_cw)
-
-                    if "has already been taken" in r.text or r.status_code == 422:
-                        r = requests.get(f"{base_url}/contacts/search?q={to_number_plus}", headers=headers_cw)
-                        contact_id = r.json()["payload"][0]["id"]
+                    cw_response = requests.post(
+                        "https://chep-tarimas.store/send-chatwoot-message",  # ✅ cambia si tu endpoint es otro
+                        json=chatwoot_reflect
+                    )
+                    if cw_response.status_code == 200:
+                        st.info("✉️ Reflejado en Chatwoot.")
                     else:
-                        contact_id = r.json()["payload"]["id"]
-
-                    r_conv = requests.get(f"{base_url}/contacts/{contact_id}/conversations", headers=headers_cw)
-                    if r_conv.json()["payload"]:
-                        conversation_id = r_conv.json()["payload"][0]["id"]
-                    else:
-                        r_conv = requests.post(f"{base_url}/conversations", json={
-                            "source_id": to_number_plus,
-                            "inbox_id": 1
-                        }, headers=headers_cw)
-                        conversation_id = r_conv.json()["id"]
-
-                    msg_text = payload["template"]["components"][0]["parameters"][0]["text"]
-                    msg_payload = {
-                        "content": msg_text,
-                        "message_type": "outgoing",
-                        "private": False
-                    }
-                    requests.post(f"{base_url}/conversations/{conversation_id}/messages", json=msg_payload, headers=headers_cw)
-
+                        st.warning(f"⚠️ Enviado a WhatsApp, pero falló en Chatwoot ({cw_response.status_code})")
                 except Exception as e:
-                    st.warning(f"⚠️ Enviado a WhatsApp, pero falló en Chatwoot (saliente): {e}")
+                    st.warning(f"⚠️ Enviado a WhatsApp, pero falló en Chatwoot: {e}")
 
             else:
                 st.error(f"❌ Error con {to_number}: {response.text}")

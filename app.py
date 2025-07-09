@@ -57,16 +57,11 @@ if file:
             if r.status_code == 200:
                 st.success(f"✅ WhatsApp OK: {raw_number}")
 
-                # 🟢 Mensaje representativo para historial Chatwoot
-                mensaje = f"📨 Plantilla enviada: *{row[plantilla]}*\n"
-                mensaje += f"📍 Parámetro 1: {row[param1]}\n"
-                if param2 != "(ninguno)":
-                    mensaje += f"📍 Parámetro 2: {row[param2]}"
-
+                # 🔁 Reflejar en Chatwoot (mensajes masivos)
                 chatwoot_payload = {
                     "phone": raw_number,
                     "name": name,
-                    "content": mensaje
+                    "content": f"🧩 Mensaje masivo enviado con plantilla '{row[plantilla]}'"
                 }
 
                 try:
@@ -74,9 +69,9 @@ if file:
                     if cw.status_code == 200:
                         st.info(f"📥 Reflejado en Chatwoot: {raw_number}")
                     else:
-                        st.warning(f"⚠️ Error reflejando en Chatwoot: {cw.text}")
+                        st.warning(f"⚠️ Error al reflejar en Chatwoot ({raw_number}): {cw.text}")
                 except Exception as e:
-                    st.error(f"❌ Error al reflejar en Chatwoot: {e}")
+                    st.error(f"❌ Error en la petición a Chatwoot: {e}")
 
             else:
-                st.error(f"❌ WhatsApp error: {r.text}")
+                st.error(f"❌ WhatsApp error ({raw_number}): {r.text}")

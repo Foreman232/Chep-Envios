@@ -5,7 +5,6 @@ import requests
 st.set_page_config(page_title="Envío Masivo de WhatsApp", layout="centered")
 st.title("📨 Envío Masivo de WhatsApp con Excel")
 
-# ✅ API Key de 360dialog
 api_key = st.text_input("🔐 Ingresa tu API Key de 360dialog", type="password")
 file = st.file_uploader("📁 Sube tu archivo Excel", type=["xlsx"])
 
@@ -34,7 +33,6 @@ if file:
             if param2 != "(ninguno)":
                 parameters.append({"type": "text", "text": str(row[param2])})
 
-            # ✅ Envío a WhatsApp
             payload = {
                 "messaging_product": "whatsapp",
                 "to": raw_number,
@@ -59,7 +57,7 @@ if file:
             if r.status_code == 200:
                 st.success(f"✅ WhatsApp OK: {raw_number}")
 
-                # ✅ Reflejar en Chatwoot vía tu servidor (index.js)
+                # 🔁 Reflejar en Chatwoot (mensajes masivos)
                 chatwoot_payload = {
                     "phone": raw_number,
                     "name": name,
@@ -67,9 +65,8 @@ if file:
                 }
 
                 try:
-                    # Cambia esta URL si usas otro servidor
-                    cw = requests.post("https://srv870442.hstgr.cloud/send-chatwoot-message", json=chatwoot_payload)
-
+                    # ACTUALIZADO: URL correcta de tu webhook en Render
+                    cw = requests.post("https://webhook-chatwoots.onrender.com/send-chatwoot-message", json=chatwoot_payload)
                     if cw.status_code == 200:
                         st.info(f"📥 Reflejado en Chatwoot: {raw_number}")
                     else:

@@ -65,8 +65,8 @@ if file:
                 }
 
                 try:
-                    # ACTUALIZADO: URL correcta de tu webhook en Render
-                    cw = requests.post("https://webhook-chatwoots.onrender.com/send-chatwoot-message", json=chatwoot_payload)
+                    # ✅ CORREGIDO: URL sin la “s” extra
+                    cw = requests.post("https://webhook-chatwoot.onrender.com/send-chatwoot-message", json=chatwoot_payload)
                     if cw.status_code == 200:
                         st.info(f"📥 Reflejado en Chatwoot: {raw_number}")
                     else:

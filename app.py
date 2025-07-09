@@ -18,18 +18,14 @@ if file:
     st.success(f"Archivo cargado con {len(df)} filas.")
 
     # Verificar las columnas
-    st.write(df.columns)  # Esto imprimirá los nombres de todas las columnas
-
-    # Limpiar espacios de las columnas (si existen)
+    st.write(df.columns)
     df.columns = df.columns.str.strip()
 
-    # Mostrar columnas disponibles
     columns = df.columns.tolist()
     plantilla = st.selectbox("🧩 Columna con el nombre de la plantilla:", columns)
     telefono_col = st.selectbox("📱 Columna del teléfono:", columns)
     pais_col = st.selectbox("🌎 Columna del código de país:", columns)
 
-    # Parámetros opcionales
     param1 = st.selectbox("🔢 Parámetro {{1}} (Nombre del cliente):", columns)
     param2 = st.selectbox("🔢 Parámetro {{2}} (opcional):", ["(ninguno)"] + columns)
 
@@ -40,7 +36,7 @@ if file:
 
         for idx, row in df.iterrows():
             to_number = f"{row[pais_col]}{row[telefono_col]}"
-            template_name = row["nombre_plantilla"]  # Usamos comillas para asegurar que se accede correctamente
+            template_name = row[plantilla]  # 🔁 FIX aquí (usamos la variable `plantilla`)
             language = "es_MX"
 
             components = [{
@@ -48,13 +44,11 @@ if file:
                 "parameters": []
             }]
 
-            # Reemplazar {{1}} con el nombre del cliente (de la columna plantilla)
             components[0]["parameters"].append({
                 "type": "text",
-                "text": str(row[plantilla])  # Aquí se pasa el valor de la columna plantilla como el nombre del cliente
+                "text": str(row[param1])
             })
 
-            # Si hay un segundo parámetro, agregarlo
             if param2 != "(ninguno)":
                 components[0]["parameters"].append({
                     "type": "text",
@@ -66,7 +60,7 @@ if file:
                 "to": to_number,
                 "type": "template",
                 "template": {
-                    "name": template_name,  # Aquí se usa el valor de la columna nombre_plantilla que es el nombre de la plantilla activa
+                    "name": template_name,
                     "language": {
                         "code": language
                     },
@@ -85,5 +79,3 @@ if file:
                 st.success(f"✅ Mensaje enviado a {to_number}")
             else:
                 st.error(f"❌ Error con {to_number}: {response.text}")
-
-

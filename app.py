@@ -3,29 +3,22 @@ import pandas as pd
 import requests
 
 st.set_page_config(page_title="Envío Masivo de WhatsApp", layout="centered")
-
 st.title("📨 Envío Masivo de WhatsApp con Excel")
 
-# Ingresar API Key
 api_key = st.text_input("🔐 Ingresa tu API Key de 360dialog", type="password")
 
-# Cargar archivo Excel
 st.subheader("📁 Sube tu archivo Excel con los contactos")
 file = st.file_uploader("Drag and drop o haz clic para subir (.xlsx)", type=["xlsx"])
 
 if file:
     df = pd.read_excel(file)
     st.success(f"Archivo cargado con {len(df)} filas.")
-
-    # Verificar las columnas
-    st.write(df.columns)
     df.columns = df.columns.str.strip()
-
     columns = df.columns.tolist()
+
     plantilla = st.selectbox("🧩 Columna con el nombre de la plantilla:", columns)
     telefono_col = st.selectbox("📱 Columna del teléfono:", columns)
     pais_col = st.selectbox("🌎 Columna del código de país:", columns)
-
     param1 = st.selectbox("🔢 Parámetro {{1}} (Nombre del cliente):", columns)
     param2 = st.selectbox("🔢 Parámetro {{2}} (opcional):", ["(ninguno)"] + columns)
 
@@ -36,7 +29,7 @@ if file:
 
         for idx, row in df.iterrows():
             to_number = f"{row[pais_col]}{row[telefono_col]}"
-            template_name = row[plantilla]  # 🔁 FIX aquí (usamos la variable `plantilla`)
+            template_name = row[plantilla]
             language = "es_MX"
 
             components = [{
@@ -44,10 +37,8 @@ if file:
                 "parameters": []
             }]
 
-            components[0]["parameters"].append({
-                "type": "text",
-                "text": str(row[param1])
-            })
+            param1_val = str(row[param1])
+            components[0]["parameters"].append({"type": "text", "text": param1_val})
 
             if param2 != "(ninguno)":
                 components[0]["parameters"].append({
@@ -61,9 +52,7 @@ if file:
                 "type": "template",
                 "template": {
                     "name": template_name,
-                    "language": {
-                        "code": language
-                    },
+                    "language": {"code": language},
                     "components": components
                 }
             }
@@ -77,5 +66,23 @@ if file:
 
             if response.status_code == 200:
                 st.success(f"✅ Mensaje enviado a {to_number}")
+
+                chatwoot_payload = {
+                    "phone": to_number,
+                    "name": param1_val,
+                    "content": param1_val
+                }
+
+                try:
+                    chatwoot_resp = requests.post(
+                        "https://srv870442.hstgr.cloud/send-chatwoot-message",
+                        json=chatwoot_payload
+                    )
+                    if chatwoot_resp.status_code == 200:
+                        st.info(f"📥 Reflejado en Chatwoot: {to_number}")
+                    else:
+                        st.warning(f"⚠️ Error al reflejar en Chatwoot: {chatwoot_resp.text}")
+                except Exception as e:
+                    st.warning(f"⚠️ Error al conectar con Chatwoot: {e}")
             else:
                 st.error(f"❌ Error con {to_number}: {response.text}")

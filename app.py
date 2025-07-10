@@ -1,15 +1,15 @@
 import streamlit as st
 import pandas as pd
 import requests
-from io import BytesIO
+import time
 
-st.set_page_config(page_title="WhatsApp Masivo", layout="centered")
-st.title("📨 Envío Masivo de WhatsApp con Control Antiduplicado")
+st.set_page_config(page_title="Envío Masivo de WhatsApp", layout="centered")
+st.title("📨 Envío Masivo de WhatsApp con Excel")
 
 if "enviados" not in st.session_state:
     st.session_state["enviados"] = set()
 
-api_key = st.text_input("🔐 API Key 360dialog", type="password")
+api_key = st.text_input("🔐 Ingresa tu API Key de 360dialog", type="password")
 file = st.file_uploader("📁 Sube tu archivo Excel", type=["xlsx"])
 
 plantillas = {
@@ -18,7 +18,7 @@ plantillas = {
 Te escribo para confirmar que el día de mañana tenemos programada la recolección de tarimas en tu localidad: {localidad}.
 
 ¿Me podrías indicar cuántas tarimas tienes para entregar? Así podremos coordinar la unidad.""",
-    
+
     "recordatorio_24_hrs": lambda: "Buen día, estamos siguiendo tu solicitud, ¿Me ayudarías a confirmar si puedo validar la cantidad de tarimas que serán entregadas?"
 }
 
@@ -27,24 +27,25 @@ if file:
     df.columns = df.columns.str.strip()
     st.success(f"Archivo cargado con {len(df)} filas.")
 
-    plantilla = st.selectbox("🧩 Plantilla:", df.columns)
-    telefono_col = st.selectbox("📱 Teléfono:", df.columns)
-    pais_col = st.selectbox("🌎 Código país:", df.columns)
-    param1 = st.selectbox("🔢 Parámetro {{1}}:", ["(ninguno)"] + df.columns.tolist())
-    param2 = st.selectbox("🔢 Parámetro {{2}} (opcional):", ["(ninguno)"] + df.columns.tolist())
+    columns = df.columns.tolist()
+    plantilla = st.selectbox("🧩 Columna plantilla:", columns)
+    telefono_col = st.selectbox("📱 Teléfono:", columns)
+    pais_col = st.selectbox("🌎 Código país:", columns)
+    param1 = st.selectbox("🔢 Parámetro {{1}}:", ["(ninguno)"] + columns)
+    param2 = st.selectbox("🔢 Parámetro {{2}} (opcional):", ["(ninguno)"] + columns)
 
     if st.button("🚀 Enviar mensajes"):
-        enviados_actual = []
+        if not api_key:
+            st.error("⚠️ Falta API Key.")
+            st.stop()
+
+        if "enviado" not in df.columns:
+            df["enviado"] = False
 
         for idx, row in df.iterrows():
-            raw_number = f"{str(row[pais_col])}{str(row[telefono_col])}".replace(" ", "").replace("-", "")
+            raw_number = f"{str(row[pais_col])}{str(row[telefono_col])}".replace(' ', '').replace('-', '')
 
-            # Verificación de duplicado por sesión
-            if raw_number in st.session_state["enviados"]:
-                continue
-
-            # Verificación por columna Excel
-            if str(row.get("enviado")).strip().lower() in ["true", "1", "yes"]:
+            if raw_number in st.session_state["enviados"] or row.get("enviado") == True:
                 continue
 
             plantilla_nombre = str(row[plantilla]).strip()
@@ -73,7 +74,10 @@ if file:
             }
 
             if parameters:
-                payload["template"]["components"].append({"type": "body", "parameters": parameters})
+                payload["template"]["components"].append({
+                    "type": "body",
+                    "parameters": parameters
+                })
 
             headers = {
                 "Content-Type": "application/json",
@@ -83,22 +87,25 @@ if file:
             r = requests.post("https://waba-v2.360dialog.io/messages", headers=headers, json=payload)
 
             if r.status_code == 200:
-                st.success(f"✅ Enviado: {raw_number}")
+                st.success(f"✅ WhatsApp OK: {raw_number}")
                 st.session_state["enviados"].add(raw_number)
-                df.at[idx, "enviado"] = True
-                enviados_actual.append(raw_number)
 
-                # Reflejo Chatwoot
-                requests.post("https://webhook-chatwoot.onrender.com/send-chatwoot-message", json={
+                # Reflejar solo 1 vez el mensaje real
+                chatwoot_payload = {
                     "phone": raw_number,
                     "name": param_text_1 if param1 != "(ninguno)" else "Cliente WhatsApp",
                     "content": mensaje_real
-                })
+                }
+
+                try:
+                    cw = requests.post("https://webhook-chatwoot.onrender.com/send-chatwoot-message", json=chatwoot_payload)
+                    if cw.status_code == 200:
+                        st.info(f"📥 Reflejado en Chatwoot: {raw_number}")
+                except Exception as e:
+                    st.warning(f"⚠️ Error reflejo Chatwoot: {e}")
+
+                df.at[idx, "enviado"] = True
             else:
-                st.error(f"❌ Error ({raw_number}): {r.text}")
+                st.error(f"❌ WhatsApp error ({raw_number}): {r.text}")
 
-        # Descarga de Excel actualizado
-        output = BytesIO()
-        df.to_excel(output, index=False)
-        st.download_button("⬇️ Descargar archivo con marcados", data=output.getvalue(), file_name="enviados.xlsx")
-
+            time.sleep(1.5)  # Evita spam o colisiones

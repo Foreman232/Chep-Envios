@@ -5,10 +5,11 @@ import requests
 st.set_page_config(page_title="Envío Masivo de WhatsApp", layout="centered")
 st.title("📨 Envío Masivo de WhatsApp con Excel")
 
+# Input de API Key
 api_key = st.text_input("🔐 Ingresa tu API Key de 360dialog", type="password")
 file = st.file_uploader("📁 Sube tu archivo Excel", type=["xlsx"])
 
-# Plantillas reales con sus textos renderizados (solo si deseas mostrar lo enviado en Chatwoot)
+# Plantillas renderizadas (solo si deseas mostrar en Chatwoot también)
 plantillas = {
     "mensaje_entre_semana_24_hrs": lambda localidad: f"""Buen día, te saludamos de CHEP (Tarimas azules), es un gusto en saludarte.
 
@@ -19,6 +20,10 @@ Te escribo para confirmar que el día de mañana tenemos programada la recolecci
     "recordatorio_24_hrs": lambda: "Buen día, estamos siguiendo tu solicitud, ¿Me ayudarías a confirmar si puedo validar la cantidad de tarimas que serán entregadas?"
 }
 
+# Inicializar variable de sesión para evitar duplicados
+if 'mensajes_enviados' not in st.session_state:
+    st.session_state.mensajes_enviados = set()
+
 if file:
     df = pd.read_excel(file)
     st.success(f"Archivo cargado con {len(df)} filas.")
@@ -28,7 +33,7 @@ if file:
     plantilla = st.selectbox("🧩 Columna plantilla:", columns)
     telefono_col = st.selectbox("📱 Teléfono:", columns)
     pais_col = st.selectbox("🌎 Código país:", columns)
-    param1 = st.selectbox("🔢 Parámetro {{1}}:", columns)
+    param1 = st.selectbox("🔢 Parámetro {{1}}:", ["(ninguno)"] + columns)
     param2 = st.selectbox("🔢 Parámetro {{2}} (opcional):", ["(ninguno)"] + columns)
 
     if st.button("🚀 Enviar mensajes"):
@@ -38,20 +43,25 @@ if file:
 
         for idx, row in df.iterrows():
             raw_number = f"{str(row[pais_col])}{str(row[telefono_col])}".replace(' ', '').replace('-', '')
+
+            if raw_number in st.session_state.mensajes_enviados:
+                st.warning(f"🔁 Ya se envió mensaje a: {raw_number}")
+                continue
+
             plantilla_nombre = str(row[plantilla]).strip()
             parameters = []
 
+            # Construir mensaje según plantilla
             if plantilla_nombre == "recordatorio_24_hrs":
-                # Sin parámetros
                 mensaje_real = plantillas["recordatorio_24_hrs"]()
             else:
-                param_text_1 = str(row[param1])
+                param_text_1 = str(row[param1]) if param1 != "(ninguno)" else ""
                 parameters.append({"type": "text", "text": param_text_1})
 
                 if param2 != "(ninguno)":
                     parameters.append({"type": "text", "text": str(row[param2])})
 
-                mensaje_real = plantillas.get(plantilla_nombre, lambda x: f"Mensaje enviado con parámetro: {param_text_1}")(param_text_1)
+                mensaje_real = plantillas.get(plantilla_nombre, lambda x: f"Mensaje enviado: {param_text_1}")(param_text_1)
 
             payload = {
                 "messaging_product": "whatsapp",
@@ -79,10 +89,11 @@ if file:
 
             if r.status_code == 200:
                 st.success(f"✅ WhatsApp OK: {raw_number}")
+                st.session_state.mensajes_enviados.add(raw_number)
 
                 chatwoot_payload = {
                     "phone": raw_number,
-                    "name": str(row[param1]),
+                    "name": str(row[param1]) if param1 != "(ninguno)" else "",
                     "content": mensaje_real
                 }
 

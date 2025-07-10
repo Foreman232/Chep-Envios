@@ -2,23 +2,20 @@ import streamlit as st
 import pandas as pd
 import requests
 import uuid
-import time
 
 st.set_page_config(page_title="Envío Masivo de WhatsApp", layout="centered")
 st.title("📨 Envío Masivo de WhatsApp con Excel")
 
-# Init state para evitar duplicados
-def init_state():
-    if "enviados" not in st.session_state:
-        st.session_state["enviados"] = set()
-    if "ya_envio" not in st.session_state:
-        st.session_state["ya_envio"] = False
-
-init_state()
+# Estado para evitar reenvíos y duplicados
+if "ya_envio" not in st.session_state:
+    st.session_state["ya_envio"] = False
+if "enviados" not in st.session_state:
+    st.session_state["enviados"] = set()
 
 api_key = st.text_input("🔐 Ingresa tu API Key de 360dialog", type="password")
 file = st.file_uploader("📁 Sube tu archivo Excel", type=["xlsx"])
 
+# Diccionario de plantillas
 plantillas = {
     "mensaje_entre_semana_24_hrs": lambda localidad: f"""Buen día, te saludamos de CHEP (Tarimas azules), es un gusto en saludarte.
 
@@ -38,19 +35,14 @@ if file:
     plantilla = st.selectbox("🧩 Columna plantilla:", columns)
     telefono_col = st.selectbox("📱 Teléfono:", columns)
     pais_col = st.selectbox("🌎 Código país:", columns)
-    param1 = st.selectbox("🔹 Parámetro {{1}}:", ["(ninguno)"] + columns)
-    param2 = st.selectbox("🔹 Parámetro {{2}} (opcional):", ["(ninguno)"] + columns)
+    param1 = st.selectbox("🔢 Parámetro {{1}}:", ["(ninguno)"] + columns)
+    param2 = st.selectbox("🔢 Parámetro {{2}} (opcional):", ["(ninguno)"] + columns)
 
-    if st.button("🚀 Enviar mensajes", disabled=st.session_state["ya_envio"]):
+    if st.button("🚀 Enviar mensajes") and not st.session_state["ya_envio"]:
         st.session_state["ya_envio"] = True
-
-        if not api_key:
-            st.error("⚠️ Falta API Key.")
-            st.stop()
 
         for idx, row in df.iterrows():
             raw_number = f"{str(row[pais_col])}{str(row[telefono_col])}".replace(' ', '').replace('-', '')
-
             if raw_number in st.session_state["enviados"]:
                 continue
 
@@ -62,14 +54,12 @@ if file:
 
             if plantilla_nombre == "recordatorio_24_hrs":
                 mensaje_real = plantillas["recordatorio_24_hrs"]()
-                param_text_1 = ""
+                param_text_1 = "Cliente WhatsApp"
             else:
-                param_text_1 = str(row[param1]) if param1 != "(ninguno)" else ""
+                param_text_1 = str(row[param1]) if param1 != "(ninguno)" else "Cliente WhatsApp"
                 parameters.append({"type": "text", "text": param_text_1})
-
                 if param2 != "(ninguno)":
                     parameters.append({"type": "text", "text": str(row[param2])})
-
                 mensaje_real = plantillas.get(plantilla_nombre, lambda x: f"Mensaje enviado con parámetro: {x}")(param_text_1)
 
             payload = {
@@ -92,20 +82,19 @@ if file:
             headers = {
                 "Content-Type": "application/json",
                 "D360-API-KEY": api_key,
-                "X-Request-ID": str(uuid.uuid4())  # ID único para evitar reintento duplicado
+                "X-Request-ID": str(uuid.uuid4())
             }
 
-            print(f"➡️ Enviando a WhatsApp: {raw_number} | Payload: {payload}")
             r = requests.post("https://waba-v2.360dialog.io/messages", headers=headers, json=payload)
-            print(f"✅ Status: {r.status_code} | Respuesta: {r.text}")
 
             if r.status_code == 200:
                 st.success(f"✅ WhatsApp OK: {raw_number}")
                 st.session_state["enviados"].add(raw_number)
+                df.at[idx, "enviado"] = True
 
                 chatwoot_payload = {
                     "phone": raw_number,
-                    "name": param_text_1 if param1 != "(ninguno)" else "Cliente WhatsApp",
+                    "name": param_text_1,
                     "content": mensaje_real
                 }
 
@@ -118,8 +107,5 @@ if file:
                 except Exception as e:
                     st.error(f"❌ Error reflejo Chatwoot: {e}")
 
-                df.at[idx, "enviado"] = True
             else:
                 st.error(f"❌ WhatsApp error ({raw_number}): {r.text}")
-
-            time.sleep(0.5)  # Espera para evitar doble envio

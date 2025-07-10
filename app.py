@@ -8,6 +8,16 @@ st.title("📨 Envío Masivo de WhatsApp con Excel")
 api_key = st.text_input("🔐 Ingresa tu API Key de 360dialog", type="password")
 file = st.file_uploader("📁 Sube tu archivo Excel", type=["xlsx"])
 
+# 📈 Diccionario de plantillas reales (agrega más si necesitas)
+plantillas = {
+    "mensaje_entre_semana_24_hrs": lambda localidad: f"""Buen día, te saludamos de CHEP (Tarimas azules), es un gusto en saludarte.
+
+Te escribo para confirmar que el día de mañana tenemos programada la recolección de tarimas en tu localidad: {localidad}.
+
+¿Me podrías indicar cuántas tarimas tienes para entregar? Así podremos coordinar la unidad."""
+    # Puedes agregar más plantillas aquí
+}
+
 if file:
     df = pd.read_excel(file)
     st.success(f"Archivo cargado con {len(df)} filas.")
@@ -40,7 +50,7 @@ if file:
                 "template": {
                     "name": row[plantilla],
                     "language": {"code": "es_MX"},
-                    "components": [ {
+                    "components": [{
                         "type": "body",
                         "parameters": parameters
                     }]
@@ -57,24 +67,19 @@ if file:
             if r.status_code == 200:
                 st.success(f"✅ WhatsApp OK: {raw_number}")
 
-                # 🟢 Reflejar en Chatwoot con contenido simulado (mensaje real como WhatsApp)
+                # 🔹 Mostrar mensaje real (no simulado)
+                plantilla_nombre = row[plantilla]
                 localidad = parameters[0]['text']
-                mensaje_simulado = f"""💬 *Mensaje masivo enviado con plantilla '{row[plantilla]}'*:
 
-📍 Localidad: {localidad}
-
-📝 *Texto enviado por WhatsApp:*
-
-> Buen día, te saludamos de CHEP (Tarimas azules), es un gusto en saludarte.
-
-Te escribo para confirmar que el día de mañana tenemos programada la recolección de tarimas en tu localidad: {localidad}.
-
-¿Me podrías indicar cuántas tarimas tienes para entregar? Así podremos coordinar la unidad."""
+                if plantilla_nombre in plantillas:
+                    mensaje_real = plantillas[plantilla_nombre](localidad)
+                else:
+                    mensaje_real = f"💬 Mensaje enviado con plantilla '{plantilla_nombre}' con parámetro: {localidad}"
 
                 chatwoot_payload = {
                     "phone": raw_number,
                     "name": name,
-                    "content": mensaje_simulado
+                    "content": mensaje_real
                 }
 
                 try:
@@ -85,6 +90,5 @@ Te escribo para confirmar que el día de mañana tenemos programada la recolecci
                         st.warning(f"⚠️ Error al reflejar en Chatwoot ({raw_number}): {cw.text}")
                 except Exception as e:
                     st.error(f"❌ Error en la petición a Chatwoot: {e}")
-
             else:
                 st.error(f"❌ WhatsApp error ({raw_number}): {r.text}")

@@ -8,14 +8,15 @@ st.title("📨 Envío Masivo de WhatsApp con Excel")
 api_key = st.text_input("🔐 Ingresa tu API Key de 360dialog", type="password")
 file = st.file_uploader("📁 Sube tu archivo Excel", type=["xlsx"])
 
-# 📈 Diccionario de plantillas reales (agrega más si necesitas)
+# Plantillas reales con sus textos renderizados (solo si deseas mostrar lo enviado en Chatwoot)
 plantillas = {
     "mensaje_entre_semana_24_hrs": lambda localidad: f"""Buen día, te saludamos de CHEP (Tarimas azules), es un gusto en saludarte.
 
 Te escribo para confirmar que el día de mañana tenemos programada la recolección de tarimas en tu localidad: {localidad}.
 
-¿Me podrías indicar cuántas tarimas tienes para entregar? Así podremos coordinar la unidad."""
-    # Puedes agregar más plantillas aquí
+¿Me podrías indicar cuántas tarimas tienes para entregar? Así podremos coordinar la unidad.""",
+    
+    "recordatorio_24_hrs": lambda: "Buen día, estamos siguiendo tu solicitud, ¿Me ayudarías a confirmar si puedo validar la cantidad de tarimas que serán entregadas?"
 }
 
 if file:
@@ -37,25 +38,37 @@ if file:
 
         for idx, row in df.iterrows():
             raw_number = f"{str(row[pais_col])}{str(row[telefono_col])}".replace(' ', '').replace('-', '')
-            name = str(row[param1])
-            parameters = [{"type": "text", "text": name}]
+            plantilla_nombre = str(row[plantilla]).strip()
+            parameters = []
 
-            if param2 != "(ninguno)":
-                parameters.append({"type": "text", "text": str(row[param2])})
+            if plantilla_nombre == "recordatorio_24_hrs":
+                # Sin parámetros
+                mensaje_real = plantillas["recordatorio_24_hrs"]()
+            else:
+                param_text_1 = str(row[param1])
+                parameters.append({"type": "text", "text": param_text_1})
+
+                if param2 != "(ninguno)":
+                    parameters.append({"type": "text", "text": str(row[param2])})
+
+                mensaje_real = plantillas.get(plantilla_nombre, lambda x: f"Mensaje enviado con parámetro: {param_text_1}")(param_text_1)
 
             payload = {
                 "messaging_product": "whatsapp",
                 "to": raw_number,
                 "type": "template",
                 "template": {
-                    "name": row[plantilla],
+                    "name": plantilla_nombre,
                     "language": {"code": "es_MX"},
-                    "components": [{
-                        "type": "body",
-                        "parameters": parameters
-                    }]
+                    "components": []
                 }
             }
+
+            if parameters:
+                payload["template"]["components"].append({
+                    "type": "body",
+                    "parameters": parameters
+                })
 
             headers = {
                 "Content-Type": "application/json",
@@ -67,18 +80,9 @@ if file:
             if r.status_code == 200:
                 st.success(f"✅ WhatsApp OK: {raw_number}")
 
-                # 🔹 Mostrar mensaje real (no simulado)
-                plantilla_nombre = row[plantilla]
-                localidad = parameters[0]['text']
-
-                if plantilla_nombre in plantillas:
-                    mensaje_real = plantillas[plantilla_nombre](localidad)
-                else:
-                    mensaje_real = f"💬 Mensaje enviado con plantilla '{plantilla_nombre}' con parámetro: {localidad}"
-
                 chatwoot_payload = {
                     "phone": raw_number,
-                    "name": name,
+                    "name": str(row[param1]),
                     "content": mensaje_real
                 }
 

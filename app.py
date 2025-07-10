@@ -5,11 +5,9 @@ import requests
 st.set_page_config(page_title="Envío Masivo de WhatsApp", layout="centered")
 st.title("📨 Envío Masivo de WhatsApp con Excel")
 
-# Input de API Key
 api_key = st.text_input("🔐 Ingresa tu API Key de 360dialog", type="password")
 file = st.file_uploader("📁 Sube tu archivo Excel", type=["xlsx"])
 
-# Plantillas renderizadas (solo si deseas mostrar en Chatwoot también)
 plantillas = {
     "mensaje_entre_semana_24_hrs": lambda localidad: f"""Buen día, te saludamos de CHEP (Tarimas azules), es un gusto en saludarte.
 
@@ -20,14 +18,13 @@ Te escribo para confirmar que el día de mañana tenemos programada la recolecci
     "recordatorio_24_hrs": lambda: "Buen día, estamos siguiendo tu solicitud, ¿Me ayudarías a confirmar si puedo validar la cantidad de tarimas que serán entregadas?"
 }
 
-# Inicializar variable de sesión para evitar duplicados
-if 'mensajes_enviados' not in st.session_state:
-    st.session_state.mensajes_enviados = set()
-
 if file:
     df = pd.read_excel(file)
     st.success(f"Archivo cargado con {len(df)} filas.")
     df.columns = df.columns.str.strip()
+    if "enviado" not in df.columns:
+        df["enviado"] = False  # Marcar enviados
+
     columns = df.columns.tolist()
 
     plantilla = st.selectbox("🧩 Columna plantilla:", columns)
@@ -42,16 +39,13 @@ if file:
             st.stop()
 
         for idx, row in df.iterrows():
-            raw_number = f"{str(row[pais_col])}{str(row[telefono_col])}".replace(' ', '').replace('-', '')
-
-            if raw_number in st.session_state.mensajes_enviados:
-                st.warning(f"🔁 Ya se envió mensaje a: {raw_number}")
+            if row["enviado"] == True:
                 continue
 
+            raw_number = f"{str(row[pais_col])}{str(row[telefono_col])}".replace(' ', '').replace('-', '')
             plantilla_nombre = str(row[plantilla]).strip()
             parameters = []
 
-            # Construir mensaje según plantilla
             if plantilla_nombre == "recordatorio_24_hrs":
                 mensaje_real = plantillas["recordatorio_24_hrs"]()
             else:
@@ -89,11 +83,11 @@ if file:
 
             if r.status_code == 200:
                 st.success(f"✅ WhatsApp OK: {raw_number}")
-                st.session_state.mensajes_enviados.add(raw_number)
+                df.at[idx, "enviado"] = True  # Marcar como enviado
 
                 chatwoot_payload = {
                     "phone": raw_number,
-                    "name": str(row[param1]) if param1 != "(ninguno)" else "",
+                    "name": param_text_1,
                     "content": mensaje_real
                 }
 
@@ -107,3 +101,7 @@ if file:
                     st.error(f"❌ Error en la petición a Chatwoot: {e}")
             else:
                 st.error(f"❌ WhatsApp error ({raw_number}): {r.text}")
+
+        # Mostrar y permitir descarga del Excel actualizado
+        st.success("✅ Proceso finalizado. Puedes descargar el archivo actualizado:")
+        st.download_button("📥 Descargar Excel actualizado", data=df.to_excel(index=False), file_name="resultado_envios.xlsx")

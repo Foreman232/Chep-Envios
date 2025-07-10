@@ -40,7 +40,7 @@ if file:
                 "template": {
                     "name": row[plantilla],
                     "language": {"code": "es_MX"},
-                    "components": [{
+                    "components": [ {
                         "type": "body",
                         "parameters": parameters
                     }]
@@ -57,15 +57,27 @@ if file:
             if r.status_code == 200:
                 st.success(f"✅ WhatsApp OK: {raw_number}")
 
-                # 🔁 Reflejar en Chatwoot (mensajes masivos)
+                # 🟢 Reflejar en Chatwoot con contenido simulado (mensaje real como WhatsApp)
+                localidad = parameters[0]['text']
+                mensaje_simulado = f"""💬 *Mensaje masivo enviado con plantilla '{row[plantilla]}'*:
+
+📍 Localidad: {localidad}
+
+📝 *Texto enviado por WhatsApp:*
+
+> Buen día, te saludamos de CHEP (Tarimas azules), es un gusto en saludarte.
+
+Te escribo para confirmar que el día de mañana tenemos programada la recolección de tarimas en tu localidad: {localidad}.
+
+¿Me podrías indicar cuántas tarimas tienes para entregar? Así podremos coordinar la unidad."""
+
                 chatwoot_payload = {
                     "phone": raw_number,
                     "name": name,
-                    "content": f"🧩 Mensaje masivo enviado con plantilla '{row[plantilla]}'"
+                    "content": mensaje_simulado
                 }
 
                 try:
-                    # ✅ CORREGIDO: URL sin la “s” extra
                     cw = requests.post("https://webhook-chatwoot.onrender.com/send-chatwoot-message", json=chatwoot_payload)
                     if cw.status_code == 200:
                         st.info(f"📥 Reflejado en Chatwoot: {raw_number}")

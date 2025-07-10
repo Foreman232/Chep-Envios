@@ -5,6 +5,10 @@ import requests
 st.set_page_config(page_title="Envío Masivo de WhatsApp", layout="centered")
 st.title("📨 Envío Masivo de WhatsApp con Excel")
 
+# Init state para evitar duplicados
+if "enviados" not in st.session_state:
+    st.session_state["enviados"] = set()
+
 api_key = st.text_input("🔐 Ingresa tu API Key de 360dialog", type="password")
 file = st.file_uploader("📁 Sube tu archivo Excel", type=["xlsx"])
 
@@ -20,11 +24,9 @@ Te escribo para confirmar que el día de mañana tenemos programada la recolecci
 
 if file:
     df = pd.read_excel(file)
-    st.success(f"Archivo cargado con {len(df)} filas.")
     df.columns = df.columns.str.strip()
-    if "enviado" not in df.columns:
-        df["enviado"] = False  # Marcar enviados
-
+    st.success(f"Archivo cargado con {len(df)} filas.")
+    
     columns = df.columns.tolist()
 
     plantilla = st.selectbox("🧩 Columna plantilla:", columns)
@@ -39,13 +41,20 @@ if file:
             st.stop()
 
         for idx, row in df.iterrows():
-            if row["enviado"] == True:
+            raw_number = f"{str(row[pais_col])}{str(row[telefono_col])}".replace(' ', '').replace('-', '')
+
+            # Verifica si ya fue enviado antes (en esta sesión)
+            if raw_number in st.session_state["enviados"]:
                 continue
 
-            raw_number = f"{str(row[pais_col])}{str(row[telefono_col])}".replace(' ', '').replace('-', '')
+            # Si existe una columna 'enviado', respeta su valor
+            if "enviado" in df.columns and row.get("enviado") == True:
+                continue
+
             plantilla_nombre = str(row[plantilla]).strip()
             parameters = []
 
+            # Construye parámetros según la plantilla
             if plantilla_nombre == "recordatorio_24_hrs":
                 mensaje_real = plantillas["recordatorio_24_hrs"]()
             else:
@@ -55,7 +64,7 @@ if file:
                 if param2 != "(ninguno)":
                     parameters.append({"type": "text", "text": str(row[param2])})
 
-                mensaje_real = plantillas.get(plantilla_nombre, lambda x: f"Mensaje enviado: {param_text_1}")(param_text_1)
+                mensaje_real = plantillas.get(plantilla_nombre, lambda x: f"Mensaje enviado con parámetro: {x}")(param_text_1)
 
             payload = {
                 "messaging_product": "whatsapp",
@@ -83,11 +92,12 @@ if file:
 
             if r.status_code == 200:
                 st.success(f"✅ WhatsApp OK: {raw_number}")
-                df.at[idx, "enviado"] = True  # Marcar como enviado
+                st.session_state["enviados"].add(raw_number)
 
+                # Reflejo en Chatwoot (solo informativo)
                 chatwoot_payload = {
                     "phone": raw_number,
-                    "name": param_text_1,
+                    "name": param_text_1 if param1 != "(ninguno)" else "Cliente WhatsApp",
                     "content": mensaje_real
                 }
 
@@ -98,10 +108,9 @@ if file:
                     else:
                         st.warning(f"⚠️ Error al reflejar en Chatwoot ({raw_number}): {cw.text}")
                 except Exception as e:
-                    st.error(f"❌ Error en la petición a Chatwoot: {e}")
+                    st.error(f"❌ Error reflejo Chatwoot: {e}")
+
+                # Marca como enviado (en DataFrame)
+                df.at[idx, "enviado"] = True
             else:
                 st.error(f"❌ WhatsApp error ({raw_number}): {r.text}")
-
-        # Mostrar y permitir descarga del Excel actualizado
-        st.success("✅ Proceso finalizado. Puedes descargar el archivo actualizado:")
-        st.download_button("📥 Descargar Excel actualizado", data=df.to_excel(index=False), file_name="resultado_envios.xlsx")

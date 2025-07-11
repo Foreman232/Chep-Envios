@@ -40,12 +40,12 @@ if file:
             st.error("⚠️ Falta API Key.")
             st.stop()
 
-        st.session_state["ya_ejecuto"] = True  # marca como ejecutado
+        st.session_state["ya_ejecuto"] = True
 
         for idx, row in df.iterrows():
             raw_number = f"{str(row[pais_col])}{str(row[telefono_col])}".replace(' ', '').replace('-', '')
+            full_number = f"+{raw_number}"
 
-            # Verifica si ya fue enviado
             if "enviado" in df.columns and row.get("enviado") == True:
                 continue
 
@@ -89,7 +89,7 @@ if file:
                 "D360-API-KEY": api_key
             }
 
-            # Marcamos como enviado antes de ejecutar
+            # Marcar como enviado
             df.at[idx, "enviado"] = True
 
             r = requests.post("https://waba-v2.360dialog.io/messages", headers=headers, json=payload)
@@ -97,9 +97,9 @@ if file:
             if r.status_code == 200:
                 st.success(f"✅ WhatsApp OK: {raw_number}")
 
-                # Enviar a Chatwoot también
+                # Reflejar en Chatwoot
                 chatwoot_payload = {
-                    "phone": raw_number,
+                    "phone": full_number,
                     "name": param_text_1 or "Cliente WhatsApp",
                     "content": mensaje_real
                 }

@@ -42,8 +42,8 @@ if file:
 
         for idx, row in df.iterrows():
             raw_number = f"{str(row[pais_col]).strip()}{str(row[telefono_col]).strip()}"
-            raw_number = raw_number.replace("++", "+").replace("+", "")  # 🔧 Elimina doble "+" o cualquier "+"
-            full_number = f"+{raw_number}"  # ✅ Formato final
+            raw_number = raw_number.replace("++", "+").replace("+", "")  # quitar duplicados
+            full_number = f"+{raw_number}"  # con "+" solo para Chatwoot
 
             if "enviado" in df.columns and row.get("enviado") == True:
                 continue
@@ -93,7 +93,7 @@ if file:
                 st.success(f"✅ WhatsApp OK: {raw_number}")
 
                 chatwoot_payload = {
-                    "phone": full_number,  # con "+"
+                    "phone": full_number,
                     "name": param_text_1 or "Cliente WhatsApp",
                     "content": mensaje_real
                 }

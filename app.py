@@ -3,13 +3,13 @@ import pandas as pd
 import requests
 
 st.set_page_config(page_title="Envío Masivo de WhatsApp", layout="centered")
-st.title("📨 Envío Masivo de WhatsApp con Excel")
+st.title("\U0001F4E8 Envío Masivo de WhatsApp con Excel")
 
 if "ya_ejecuto" not in st.session_state:
     st.session_state["ya_ejecuto"] = False
 
-api_key = st.text_input("🔐 Ingresa tu API Key de 360dialog", type="password")
-file = st.file_uploader("📁 Sube tu archivo Excel", type=["xlsx"])
+api_key = st.text_input("\U0001F512 Ingresa tu API Key de 360dialog", type="password")
+file = st.file_uploader("\U0001F4C1 Sube tu archivo Excel", type=["xlsx"])
 
 plantillas = {
     "mensaje_entre_semana_24_hrs": lambda localidad: f"""Buen día, te saludamos de CHEP (Tarimas azules), es un gusto en saludarte.
@@ -27,13 +27,13 @@ if file:
     st.success(f"Archivo cargado con {len(df)} filas.")
     columns = df.columns.tolist()
 
-    plantilla = st.selectbox("🧩 Columna plantilla:", columns)
-    telefono_col = st.selectbox("📱 Teléfono:", columns)
-    pais_col = st.selectbox("🌐 Código país:", columns)
-    param1 = st.selectbox("🔢 Parámetro {{1}}:", ["(ninguno)"] + columns)
-    param2 = st.selectbox("🔢 Parámetro {{2}} (opcional):", ["(ninguno)"] + columns)
+    plantilla = st.selectbox("\U0001F9E9 Columna plantilla:", columns)
+    telefono_col = st.selectbox("\U0001F4F1 Teléfono:", columns)
+    pais_col = st.selectbox("\U0001F30E Código país:", columns)
+    param1 = st.selectbox("\U0001F522 Parámetro {{1}}:", ["(ninguno)"] + columns)
+    param2 = st.selectbox("\U0001F522 Parámetro {{2}} (opcional):", ["(ninguno)"] + columns)
 
-    if st.button("🚀 Enviar mensajes") and not st.session_state["ya_ejecuto"]:
+    if st.button("\U0001F680 Enviar mensajes") and not st.session_state["ya_ejecuto"]:
         if not api_key:
             st.error("⚠️ Falta API Key.")
             st.stop()
@@ -41,9 +41,8 @@ if file:
         st.session_state["ya_ejecuto"] = True
 
         for idx, row in df.iterrows():
-            raw_number = f"{str(row[pais_col]).strip()}{str(row[telefono_col]).strip()}"
-            raw_number = raw_number.replace("++", "+").replace("+", "")  # quitar duplicados
-            full_number = f"+{raw_number}"  # con "+" solo para Chatwoot
+            raw_number = f"{str(row[pais_col])}{str(row[telefono_col])}".replace(" ", "").replace("-", "").replace("+", "")
+            full_number = f"+{raw_number}"
 
             if "enviado" in df.columns and row.get("enviado") == True:
                 continue
@@ -67,7 +66,7 @@ if file:
 
             payload = {
                 "messaging_product": "whatsapp",
-                "to": raw_number,  # sin "+"
+                "to": raw_number,
                 "type": "template",
                 "template": {
                     "name": plantilla_nombre,

@@ -5,14 +5,12 @@ import requests
 st.set_page_config(page_title="Envío Masivo de WhatsApp", layout="centered")
 st.title("📨 Envío Masivo de WhatsApp con Excel")
 
-# Estado para evitar múltiples ejecuciones
 if "ya_ejecuto" not in st.session_state:
     st.session_state["ya_ejecuto"] = False
 
 api_key = st.text_input("🔐 Ingresa tu API Key de 360dialog", type="password")
 file = st.file_uploader("📁 Sube tu archivo Excel", type=["xlsx"])
 
-# Plantillas reales
 plantillas = {
     "mensaje_entre_semana_24_hrs": lambda localidad: f"""Buen día, te saludamos de CHEP (Tarimas azules), es un gusto en saludarte.
 
@@ -66,7 +64,6 @@ if file:
                     parameters.append({"type": "text", "text": param_text_2})
                 mensaje_real = plantillas.get(plantilla_nombre, lambda x: f"Mensaje enviado con parámetro: {x}")(param_text_1)
 
-            # Payload WhatsApp
             payload = {
                 "messaging_product": "whatsapp",
                 "to": raw_number,
@@ -89,7 +86,6 @@ if file:
                 "D360-API-KEY": api_key
             }
 
-            # Marcar como enviado
             df.at[idx, "enviado"] = True
 
             r = requests.post("https://waba-v2.360dialog.io/messages", headers=headers, json=payload)
@@ -97,9 +93,8 @@ if file:
             if r.status_code == 200:
                 st.success(f"✅ WhatsApp OK: {raw_number}")
 
-                # Reflejar en Chatwoot
                 chatwoot_payload = {
-                    "phone": full_number,
+                    "phone": full_number,  # ⚠️ este es el que debe coincidir con source_id
                     "name": param_text_1 or "Cliente WhatsApp",
                     "content": mensaje_real
                 }
@@ -114,4 +109,3 @@ if file:
                     st.error(f"❌ Error Chatwoot: {e}")
             else:
                 st.error(f"❌ WhatsApp error ({raw_number}): {r.text}")
-

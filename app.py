@@ -42,6 +42,7 @@ if file:
 
         for idx, row in df.iterrows():
             raw_number = f"{str(row[pais_col])}{str(row[telefono_col])}".replace(' ', '').replace('-', '')
+            raw_number = raw_number.replace('+', '')  # limpia si ya viene con "+"
             full_number = f"+{raw_number}"
 
             if "enviado" in df.columns and row.get("enviado") == True:
@@ -94,7 +95,7 @@ if file:
                 st.success(f"✅ WhatsApp OK: {raw_number}")
 
                 chatwoot_payload = {
-                    "phone": full_number,  # ⚠️ este es el que debe coincidir con source_id
+                    "phone": full_number,  # ya normalizado
                     "name": param_text_1 or "Cliente WhatsApp",
                     "content": mensaje_real
                 }

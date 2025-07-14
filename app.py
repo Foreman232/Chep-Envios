@@ -99,7 +99,7 @@ if file:
                     }
 
                     try:
-                        cw = requests.post("https://srv904439.hstgr.cloud/send-chatwoot-message", json=chatwoot_payload)
+                        cw = requests.post("https://webhook-chatwoots.onrender.com/send-chatwoot-message", json=chatwoot_payload)
                         if cw.status_code == 200:
                             st.info(f"📥 Reflejado en Chatwoot: {raw_number}")
                         else:

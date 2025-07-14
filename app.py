@@ -2,14 +2,14 @@ import streamlit as st
 import pandas as pd
 import requests
 
-st.set_page_config(page_title="EnEn\u00v1o Masivo de WhatsApp", layout="centered")
+st.set_page_config(page_title="Envío Masivo de WhatsApp", layout="centered")
 st.title("📨 Envío Masivo de WhatsApp con Excel")
 
 if "ya_ejecuto" not in st.session_state:
     st.session_state["ya_ejecuto"] = False
 
-api_key = st.text_input("🔒 Ingresa tu API Key de 360dialog", type="password")
-file = st.file_uploader("📁 Sube tu archivo Excel", type=["xlsx"])
+api_key = st.text_input("🔐 Ingresa tu API Key de 360dialog", type="password")
+file = st.file_uploader("📂 Sube tu archivo Excel", type=["xlsx"])
 
 plantillas = {
     "mensaje_entre_semana_24_hrs": lambda localidad: f"""Buen día, te saludamos de CHEP (Tarimas azules), es un gusto en saludarte.
@@ -27,7 +27,7 @@ if file:
     st.success(f"Archivo cargado con {len(df)} filas.")
     columns = df.columns.tolist()
 
-    plantilla = st.selectbox("🩹 Columna plantilla:", columns)
+    plantilla = st.selectbox("🧩 Columna plantilla:", columns)
     telefono_col = st.selectbox("📱 Teléfono:", columns)
     pais_col = st.selectbox("🌎 Código país:", columns)
     param1 = st.selectbox("🔢 Parámetro {{1}}:", ["(ninguno)"] + columns)
@@ -41,11 +41,7 @@ if file:
         st.session_state["ya_ejecuto"] = True
 
         for idx, row in df.iterrows():
-            raw_number = f"{str(row[pais_col])}{str(row[telefono_col])}".strip().replace(" ", "").replace("-", "").replace("+", "")
-            if not raw_number.isdigit():
-                st.warning(f"Número inválido en fila {idx + 2}: {raw_number}")
-                continue
-
+            raw_number = f"{str(row[pais_col])}{str(row[telefono_col])}".replace(" ", "").replace("-", "").replace("+", "")
             full_number = f"+{raw_number}"
 
             if "enviado" in df.columns and row.get("enviado") == True:
@@ -90,24 +86,29 @@ if file:
                 "D360-API-KEY": api_key
             }
 
-            r = requests.post("https://waba-v2.360dialog.io/messages", headers=headers, json=payload)
+            try:
+                r = requests.post("https://waba-v2.360dialog.io/messages", headers=headers, json=payload)
 
-            if r.status_code == 200:
-                st.success(f"✅ WhatsApp OK: {raw_number}")
+                if r.status_code == 200:
+                    st.success(f"✅ WhatsApp OK: {raw_number}")
 
-                chatwoot_payload = {
-                    "phone": full_number,
-                    "name": param_text_1 or "Cliente WhatsApp",
-                    "content": mensaje_real
-                }
+                    chatwoot_payload = {
+                        "phone": full_number,
+                        "name": param_text_1 or "Cliente WhatsApp",
+                        "content": mensaje_real
+                    }
 
-                try:
-                    cw = requests.post("https://srv904439.hstgr.cloud/send-chatwoot-message", json=chatwoot_payload)
-                    if cw.status_code == 200:
-                        st.info(f"📥 Reflejado en Chatwoot: {raw_number}")
-                    else:
-                        st.warning(f"⚠️ Error Chatwoot ({raw_number}): {cw.text}")
-                except Exception as e:
-                    st.error(f"❌ Error Chatwoot: {e}")
-            else:
-                st.error(f"❌ WhatsApp error ({raw_number}): {r.text}")
+                    try:
+                        cw = requests.post("https://srv904439.hstgr.cloud/send-chatwoot-message", json=chatwoot_payload)
+                        if cw.status_code == 200:
+                            st.info(f"📥 Reflejado en Chatwoot: {raw_number}")
+                        else:
+                            st.warning(f"⚠️ Error Chatwoot ({raw_number}): {cw.status_code} - {cw.text}")
+                    except Exception as e:
+                        st.error(f"❌ Error Chatwoot (except): {e}")
+
+                else:
+                    st.error(f"❌ WhatsApp error ({raw_number}): {r.status_code} - {r.text}")
+
+            except Exception as e:
+                st.error(f"❌ Error general al enviar a WhatsApp: {e}")

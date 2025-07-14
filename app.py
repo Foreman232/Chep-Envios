@@ -22,6 +22,11 @@ Te escribo para confirmar que el día de mañana tenemos programada la recolecci
     "recordatorio_24_hrs": lambda: "Buen día, estamos siguiendo tu solicitud, ¿Me ayudarías a confirmar si puedo validar la cantidad de tarimas que serán entregadas?"
 }
 
+def normalizar_numero(phone):
+    if phone.startswith("+521"):
+        return "+52" + phone[4:]
+    return phone
+
 def crear_contacto_en_chatwoot(phone, name):
     url = "https://srv904439.hstgr.cloud/api/v1/accounts/1/contacts"
     headers = {
@@ -63,7 +68,7 @@ if file:
 
         for idx, row in df.iterrows():
             raw_number = f"{str(row[pais_col])}{str(row[telefono_col])}".replace(' ', '').replace('-', '')
-            full_number = f"+{raw_number}"
+            full_number = normalizar_numero(f"+{raw_number}")
 
             if "enviado" in df.columns and row.get("enviado") == True:
                 continue

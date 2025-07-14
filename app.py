@@ -22,22 +22,24 @@ Te escribo para confirmar que el día de mañana tenemos programada la recolecci
     "recordatorio_24_hrs": lambda: "Buen día, estamos siguiendo tu solicitud, ¿Me ayudarías a confirmar si puedo validar la cantidad de tarimas que serán entregadas?"
 }
 
-# Esperar a que la conversación se active en Chatwoot
-def esperar_contacto_activo(phone):
-    url = "https://srv904439.hstgr.cloud/api/v1/accounts/1/contacts/search"
+def crear_contacto_en_chatwoot(phone, name):
+    url = "https://srv904439.hstgr.cloud/api/v1/accounts/1/contacts"
     headers = {
         "Content-Type": "application/json",
         "api_access_token": "orUPYDWoDBkCShVrTSRUZsRx"
     }
-    for _ in range(10):
-        try:
-            r = requests.get(f"{url}?q={phone}", headers=headers)
-            data = r.json()
-            if data["payload"]:
-                return True
-        except:
-            pass
-        time.sleep(0.5)
+    payload = {
+        "inbox_id": 1,
+        "name": name,
+        "identifier": phone,
+        "phone_number": phone
+    }
+    try:
+        response = requests.post(url, headers=headers, json=payload)
+        if response.status_code == 200:
+            return True
+    except:
+        pass
     return False
 
 if file:
@@ -83,6 +85,9 @@ if file:
                     parameters.append({"type": "text", "text": param_text_2})
                 mensaje_real = plantillas.get(plantilla_nombre, lambda x: f"Mensaje enviado con parámetro: {x}")(param_text_1)
 
+            # Crear contacto en Chatwoot antes de enviar
+            crear_contacto_en_chatwoot(full_number, param_text_1 or "Cliente WhatsApp")
+
             payload = {
                 "messaging_product": "whatsapp",
                 "to": raw_number,
@@ -117,16 +122,13 @@ if file:
                     "content": mensaje_real
                 }
 
-                if esperar_contacto_activo(full_number):
-                    try:
-                        cw = requests.post("https://webhook-chatwoot.onrender.com/send-chatwoot-message", json=chatwoot_payload)
-                        if cw.status_code == 200:
-                            st.info(f"📥 Reflejado en Chatwoot: {raw_number}")
-                        else:
-                            st.warning(f"⚠️ Error Chatwoot ({raw_number}): {cw.text}")
-                    except Exception as e:
-                        st.error(f"❌ Error Chatwoot: {e}")
-                else:
-                    st.warning(f"⚠️ No se activó conversación en Chatwoot para: {full_number}")
+                try:
+                    cw = requests.post("https://webhook-chatwoot.onrender.com/send-chatwoot-message", json=chatwoot_payload)
+                    if cw.status_code == 200:
+                        st.info(f"📥 Reflejado en Chatwoot: {raw_number}")
+                    else:
+                        st.warning(f"⚠️ Error Chatwoot ({raw_number}): {cw.text}")
+                except Exception as e:
+                    st.error(f"❌ Error Chatwoot: {e}")
             else:
                 st.error(f"❌ WhatsApp error ({raw_number}): {r.text}")

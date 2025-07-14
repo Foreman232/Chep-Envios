@@ -1,6 +1,7 @@
 import streamlit as st
 import pandas as pd
 import requests
+import time  # ⏳ Agregado para pausar antes de enviar a Chatwoot
 
 st.set_page_config(page_title="Envío Masivo de WhatsApp", layout="centered")
 st.title("📨 Envío Masivo de WhatsApp con Excel")
@@ -94,12 +95,13 @@ if file:
                 st.success(f"✅ WhatsApp OK: {raw_number}")
 
                 chatwoot_payload = {
-                    "phone": full_number,  # ⚠️ este es el que debe coincidir con source_id
+                    "phone": full_number,
                     "name": param_text_1 or "Cliente WhatsApp",
                     "content": mensaje_real
                 }
 
                 try:
+                    time.sleep(1.5)  # ⏳ Espera para que Chatwoot tenga lista la conversación
                     cw = requests.post("https://webhook-chatwoot.onrender.com/send-chatwoot-message", json=chatwoot_payload)
                     if cw.status_code == 200:
                         st.info(f"📥 Reflejado en Chatwoot: {raw_number}")

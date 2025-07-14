@@ -9,7 +9,7 @@ if "ya_ejecuto" not in st.session_state:
     st.session_state["ya_ejecuto"] = False
 
 api_key = st.text_input("🔐 Ingresa tu API Key de 360dialog", type="password")
-file = st.file_uploader("📂 Sube tu archivo Excel", type=["xlsx"])
+file = st.file_uploader("📁 Sube tu archivo Excel", type=["xlsx"])
 
 plantillas = {
     "mensaje_entre_semana_24_hrs": lambda localidad: f"""Buen día, te saludamos de CHEP (Tarimas azules), es un gusto en saludarte.
@@ -29,7 +29,7 @@ if file:
 
     plantilla = st.selectbox("🧩 Columna plantilla:", columns)
     telefono_col = st.selectbox("📱 Teléfono:", columns)
-    pais_col = st.selectbox("🌎 Código país:", columns)
+    pais_col = st.selectbox("🌐 Código país:", columns)
     param1 = st.selectbox("🔢 Parámetro {{1}}:", ["(ninguno)"] + columns)
     param2 = st.selectbox("🔢 Parámetro {{2}} (opcional):", ["(ninguno)"] + columns)
 
@@ -41,8 +41,9 @@ if file:
         st.session_state["ya_ejecuto"] = True
 
         for idx, row in df.iterrows():
-            raw_number = f"{str(row[pais_col])}{str(row[telefono_col])}".replace(" ", "").replace("-", "").replace("+", "")
-            full_number = f"+{raw_number}"
+            raw_number = f"{str(row[pais_col]).strip()}{str(row[telefono_col]).strip()}"
+            raw_number = raw_number.replace("++", "+").replace("+", "")  # 🔧 Elimina doble "+" o cualquier "+"
+            full_number = f"+{raw_number}"  # ✅ Formato final
 
             if "enviado" in df.columns and row.get("enviado") == True:
                 continue
@@ -66,7 +67,7 @@ if file:
 
             payload = {
                 "messaging_product": "whatsapp",
-                "to": raw_number,
+                "to": raw_number,  # sin "+"
                 "type": "template",
                 "template": {
                     "name": plantilla_nombre,
@@ -86,29 +87,24 @@ if file:
                 "D360-API-KEY": api_key
             }
 
-            try:
-                r = requests.post("https://waba-v2.360dialog.io/messages", headers=headers, json=payload)
+            r = requests.post("https://waba-v2.360dialog.io/messages", headers=headers, json=payload)
 
-                if r.status_code == 200:
-                    st.success(f"✅ WhatsApp OK: {raw_number}")
+            if r.status_code == 200:
+                st.success(f"✅ WhatsApp OK: {raw_number}")
 
-                    chatwoot_payload = {
-                        "phone": full_number,
-                        "name": param_text_1 or "Cliente WhatsApp",
-                        "content": mensaje_real
-                    }
+                chatwoot_payload = {
+                    "phone": full_number,  # con "+"
+                    "name": param_text_1 or "Cliente WhatsApp",
+                    "content": mensaje_real
+                }
 
-                    try:
-                        cw = requests.post("https://webhook-chatwoots.onrender.com/send-chatwoot-message", json=chatwoot_payload)
-                        if cw.status_code == 200:
-                            st.info(f"📥 Reflejado en Chatwoot: {raw_number}")
-                        else:
-                            st.warning(f"⚠️ Error Chatwoot ({raw_number}): {cw.status_code} - {cw.text}")
-                    except Exception as e:
-                        st.error(f"❌ Error Chatwoot (except): {e}")
-
-                else:
-                    st.error(f"❌ WhatsApp error ({raw_number}): {r.status_code} - {r.text}")
-
-            except Exception as e:
-                st.error(f"❌ Error general al enviar a WhatsApp: {e}")
+                try:
+                    cw = requests.post("https://srv904439.hstgr.cloud/send-chatwoot-message", json=chatwoot_payload)
+                    if cw.status_code == 200:
+                        st.info(f"📥 Reflejado en Chatwoot: {raw_number}")
+                    else:
+                        st.warning(f"⚠️ Error Chatwoot ({raw_number}): {cw.text}")
+                except Exception as e:
+                    st.error(f"❌ Error Chatwoot: {e}")
+            else:
+                st.error(f"❌ WhatsApp error ({raw_number}): {r.text}")

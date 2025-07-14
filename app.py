@@ -86,8 +86,6 @@ if file:
                 "D360-API-KEY": api_key
             }
 
-            df.at[idx, "enviado"] = True
-
             r = requests.post("https://waba-v2.360dialog.io/messages", headers=headers, json=payload)
 
             if r.status_code == 200:

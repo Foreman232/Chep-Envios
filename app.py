@@ -47,13 +47,13 @@ if file:
         st.session_state["ya_ejecuto"] = True
 
         for idx, row in df.iterrows():
+            if "enviado" in df.columns and row.get("enviado") == True:
+                continue
+
             raw_number = f"{str(row[pais_col])}{str(row[telefono_col])}".replace(" ", "").replace("-", "")
             chatwoot_number = f"+{raw_number}"
             whatsapp_number = normalizar_numero(chatwoot_number)
             nombre = str(row[nombre_col]).strip()
-
-            if "enviado" in df.columns and row.get("enviado") == True:
-                continue
 
             plantilla_nombre = str(row[plantilla_col]).strip()
             parameters = []
@@ -62,7 +62,7 @@ if file:
 
             if plantilla_nombre == "recordatorio_24_hrs":
                 mensaje_real = plantillas["recordatorio_24_hrs"]()
-                param1 = "Cliente WhatsApp"
+                param1 = nombre or "Cliente WhatsApp"
             else:
                 if param1_col != "(ninguno)":
                     param1 = str(row[param1_col])
@@ -101,7 +101,7 @@ if file:
             if r.status_code == 200:
                 st.success(f"✅ WhatsApp enviado: {whatsapp_number}")
 
-                # Reflejar en Chatwoot
+                # Reflejar mensaje en Chatwoot
                 chatwoot_payload = {
                     "phone": chatwoot_number,
                     "name": nombre or "Cliente WhatsApp",
@@ -113,8 +113,8 @@ if file:
                     if cw.status_code == 200:
                         st.info(f"📥 Reflejado en Chatwoot: {chatwoot_number}")
                     else:
-                        st.warning(f"⚠️ Chatwoot error: {cw.text}")
+                        st.warning(f"⚠️ Chatwoot error ({chatwoot_number}): {cw.text}")
                 except Exception as e:
-                    st.error(f"❌ Error Chatwoot: {e}")
+                    st.error(f"❌ Error al reflejar en Chatwoot: {e}")
             else:
-                st.error(f"❌ WhatsApp error: {r.text}")
+                st.error(f"❌ WhatsApp error ({whatsapp_number}): {r.text}")

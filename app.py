@@ -23,14 +23,15 @@ Te escribo para confirmar que el día de mañana tenemos programada la recolecci
     "recordatorio_24_hrs": lambda: "Buen día, estamos siguiendo tu solicitud, ¿Me ayudarías a confirmar si puedo validar la cantidad de tarimas que serán entregadas?"
 }
 
-# 👉 Esta función normaliza números para 360dialog (solo +52 y +502)
+# 👉 Esta función normaliza número para WhatsApp (360dialog)
 def normalizar_numero(phone):
     if phone.startswith("+521"):
         return "+52" + phone[4:]
     return phone
 
-# 👉 Esta función crea el contacto en Chatwoot
+# 👉 Esta función crea el contacto en Chatwoot unificando como +521
 def crear_contacto_en_chatwoot(phone, name):
+    unified_phone = phone.replace("+52", "+521")
     url = "https://srv904439.hstgr.cloud/api/v1/accounts/1/contacts"
     headers = {
         "Content-Type": "application/json",
@@ -39,8 +40,8 @@ def crear_contacto_en_chatwoot(phone, name):
     payload = {
         "inbox_id": 1,
         "name": name,
-        "identifier": phone,
-        "phone_number": phone
+        "identifier": unified_phone,
+        "phone_number": unified_phone
     }
     try:
         response = requests.post(url, headers=headers, json=payload)
@@ -131,7 +132,8 @@ if file:
                 }
 
                 try:
-                    cw = requests.post("https://webhook-chatwoot.onrender.com/send-chatwoot-message", json=chatwoot_payload)
+                    # 🔄 Cambiar aquí al servidor Node.js correcto (ya no Render)
+                    cw = requests.post("https://srv904439.hstgr.cloud/send-chatwoot-message", json=chatwoot_payload)
                     if cw.status_code == 200:
                         st.info(f"📥 Reflejado en Chatwoot: {chatwoot_number}")
                     else:

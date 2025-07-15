@@ -23,13 +23,13 @@ Te escribo para confirmar que el día de mañana tenemos programada la recolecci
     "recordatorio_24_hrs": lambda: "Buen día, estamos siguiendo tu solicitud, ¿Me ayudarías a confirmar si puedo validar la cantidad de tarimas que serán entregadas?"
 }
 
-# 👉 Esta función normaliza números solo para WhatsApp (no para Chatwoot)
+# 👉 Esta función normaliza números para 360dialog (solo +52 y +502)
 def normalizar_numero(phone):
     if phone.startswith("+521"):
         return "+52" + phone[4:]
     return phone
 
-# 👉 Esta función crea el contacto en Chatwoot como viene en el Excel (respetando +521 si aplica)
+# 👉 Esta función crea el contacto en Chatwoot
 def crear_contacto_en_chatwoot(phone, name):
     url = "https://srv904439.hstgr.cloud/api/v1/accounts/1/contacts"
     headers = {
@@ -70,8 +70,8 @@ if file:
         for idx, row in df.iterrows():
             raw_number = f"{str(row[pais_col])}{str(row[telefono_col])}".replace(' ', '').replace('-', '')
             chatwoot_number = f"+{raw_number}"
-            whatsapp_number = normalizar_numero(chatwoot_number.replace('+', ''))  # sin "+"
-            
+            whatsapp_number = normalizar_numero(chatwoot_number)
+
             if "enviado" in df.columns and row.get("enviado") == True:
                 continue
 
@@ -95,10 +95,10 @@ if file:
             # Crear contacto en Chatwoot antes de enviar
             crear_contacto_en_chatwoot(chatwoot_number, param_text_1 or "Cliente WhatsApp")
 
-            # Enviar mensaje por WhatsApp
+            # Enviar mensaje por WhatsApp (360dialog)
             payload = {
                 "messaging_product": "whatsapp",
-                "to": whatsapp_number,
+                "to": whatsapp_number.replace("+", ""),
                 "type": "template",
                 "template": {
                     "name": plantilla_nombre,
@@ -119,7 +119,6 @@ if file:
             }
 
             r = requests.post("https://waba-v2.360dialog.io/messages", headers=headers, json=payload)
-
             df.at[idx, "enviado"] = r.status_code == 200
 
             if r.status_code == 200:

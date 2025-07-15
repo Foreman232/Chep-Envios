@@ -12,7 +12,6 @@ if "ya_ejecuto" not in st.session_state:
 api_key = st.text_input("🔐 Ingresa tu API Key de 360dialog", type="password")
 file = st.file_uploader("📁 Sube tu archivo Excel", type=["xlsx"])
 
-# Plantillas disponibles
 plantillas = {
     "mensaje_entre_semana_24_hrs": lambda localidad: f"""Buen día, te saludamos de CHEP (Tarimas azules), es un gusto en saludarte.
 
@@ -23,13 +22,11 @@ Te escribo para confirmar que el día de mañana tenemos programada la recolecci
     "recordatorio_24_hrs": lambda: "Buen día, estamos siguiendo tu solicitud, ¿Me ayudarías a confirmar si puedo validar la cantidad de tarimas que serán entregadas?"
 }
 
-# 👉 Esta función normaliza número para WhatsApp (360dialog)
 def normalizar_numero(phone):
     if phone.startswith("+521"):
         return "+52" + phone[4:]
     return phone
 
-# 👉 Esta función crea el contacto en Chatwoot unificando como +521
 def crear_contacto_en_chatwoot(phone, name):
     unified_phone = phone.replace("+52", "+521")
     url = "https://srv904439.hstgr.cloud/api/v1/accounts/1/contacts"
@@ -43,10 +40,13 @@ def crear_contacto_en_chatwoot(phone, name):
         "identifier": unified_phone,
         "phone_number": unified_phone
     }
-    try:
-        response = requests.post(url, headers=headers, json=payload)
-        return response.status_code in [200, 201]
-    except:
+    response = requests.post(url, headers=headers, json=payload)
+    if response.status_code in [200, 201]:
+        return True
+    elif "has already been taken" in response.text:
+        return True
+    else:
+        print("❌ Error creando contacto:", response.text)
         return False
 
 if file:
@@ -93,10 +93,31 @@ if file:
                     parameters.append({"type": "text", "text": param_text_2})
                 mensaje_real = plantillas.get(plantilla_nombre, lambda x: f"Mensaje enviado con parámetro: {x}")(param_text_1)
 
-            # Crear contacto en Chatwoot antes de enviar
-            crear_contacto_en_chatwoot(chatwoot_number, param_text_1 or "Cliente WhatsApp")
+            # 1. Crear contacto en Chatwoot
+            if not crear_contacto_en_chatwoot(chatwoot_number, param_text_1 or "Cliente WhatsApp"):
+                st.warning(f"⚠️ No se pudo crear contacto para {chatwoot_number}")
+                continue
 
-            # Enviar mensaje por WhatsApp (360dialog)
+            # 2. Reflejar en Chatwoot antes de enviar a WhatsApp
+            chatwoot_payload = {
+                "phone": chatwoot_number,
+                "name": param_text_1 or "Cliente WhatsApp",
+                "content": mensaje_real
+            }
+
+            try:
+                cw = requests.post("https://srv904439.hstgr.cloud/send-chatwoot-message", json=chatwoot_payload)
+                if cw.status_code == 200:
+                    st.info(f"📥 Reflejado en Chatwoot: {chatwoot_number}")
+                else:
+                    st.warning(f"⚠️ Error Chatwoot ({chatwoot_number}): {cw.text}")
+            except Exception as e:
+                st.error(f"❌ Error Chatwoot: {e}")
+
+            # 3. Esperar un poco para asegurar conversación
+            time.sleep(2)
+
+            # 4. Enviar mensaje real por WhatsApp (360dialog)
             payload = {
                 "messaging_product": "whatsapp",
                 "to": whatsapp_number.replace("+", ""),
@@ -123,22 +144,6 @@ if file:
             df.at[idx, "enviado"] = r.status_code == 200
 
             if r.status_code == 200:
-                st.success(f"✅ WhatsApp OK: {whatsapp_number}")
-
-                chatwoot_payload = {
-                    "phone": chatwoot_number,
-                    "name": param_text_1 or "Cliente WhatsApp",
-                    "content": mensaje_real
-                }
-
-                try:
-                    # 🔄 Cambiar aquí al servidor Node.js correcto (ya no Render)
-                    cw = requests.post("https://srv904439.hstgr.cloud/send-chatwoot-message", json=chatwoot_payload)
-                    if cw.status_code == 200:
-                        st.info(f"📥 Reflejado en Chatwoot: {chatwoot_number}")
-                    else:
-                        st.warning(f"⚠️ Error Chatwoot ({chatwoot_number}): {cw.text}")
-                except Exception as e:
-                    st.error(f"❌ Error Chatwoot: {e}")
+                st.success(f"✅ WhatsApp enviado: {whatsapp_number}")
             else:
-                st.error(f"❌ WhatsApp error ({whatsapp_number}): {r.text}")
+                st.error(f"❌ Error WhatsApp ({whatsapp_number}): {r.text}")

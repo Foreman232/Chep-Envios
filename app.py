@@ -12,6 +12,7 @@ if "ya_ejecuto" not in st.session_state:
 api_key = st.text_input("🔐 Ingresa tu API Key de 360dialog", type="password")
 file = st.file_uploader("📁 Sube tu archivo Excel", type=["xlsx"])
 
+# Plantillas disponibles
 plantillas = {
     "mensaje_entre_semana_24_hrs": lambda localidad: f"""Buen día, te saludamos de CHEP (Tarimas azules), es un gusto en saludarte.
 
@@ -22,11 +23,13 @@ Te escribo para confirmar que el día de mañana tenemos programada la recolecci
     "recordatorio_24_hrs": lambda: "Buen día, estamos siguiendo tu solicitud, ¿Me ayudarías a confirmar si puedo validar la cantidad de tarimas que serán entregadas?"
 }
 
+# 👉 Esta función normaliza números solo para WhatsApp (no para Chatwoot)
 def normalizar_numero(phone):
     if phone.startswith("+521"):
         return "+52" + phone[4:]
     return phone
 
+# 👉 Esta función crea el contacto en Chatwoot como viene en el Excel (respetando +521 si aplica)
 def crear_contacto_en_chatwoot(phone, name):
     url = "https://srv904439.hstgr.cloud/api/v1/accounts/1/contacts"
     headers = {
@@ -41,11 +44,9 @@ def crear_contacto_en_chatwoot(phone, name):
     }
     try:
         response = requests.post(url, headers=headers, json=payload)
-        if response.status_code == 200:
-            return True
+        return response.status_code in [200, 201]
     except:
-        pass
-    return False
+        return False
 
 if file:
     df = pd.read_excel(file)
@@ -68,8 +69,9 @@ if file:
 
         for idx, row in df.iterrows():
             raw_number = f"{str(row[pais_col])}{str(row[telefono_col])}".replace(' ', '').replace('-', '')
-            full_number = normalizar_numero(f"+{raw_number}")
-
+            chatwoot_number = f"+{raw_number}"
+            whatsapp_number = normalizar_numero(chatwoot_number.replace('+', ''))  # sin "+"
+            
             if "enviado" in df.columns and row.get("enviado") == True:
                 continue
 
@@ -91,11 +93,12 @@ if file:
                 mensaje_real = plantillas.get(plantilla_nombre, lambda x: f"Mensaje enviado con parámetro: {x}")(param_text_1)
 
             # Crear contacto en Chatwoot antes de enviar
-            crear_contacto_en_chatwoot(full_number, param_text_1 or "Cliente WhatsApp")
+            crear_contacto_en_chatwoot(chatwoot_number, param_text_1 or "Cliente WhatsApp")
 
+            # Enviar mensaje por WhatsApp
             payload = {
                 "messaging_product": "whatsapp",
-                "to": raw_number,
+                "to": whatsapp_number,
                 "type": "template",
                 "template": {
                     "name": plantilla_nombre,
@@ -115,14 +118,15 @@ if file:
                 "D360-API-KEY": api_key
             }
 
-            df.at[idx, "enviado"] = True
             r = requests.post("https://waba-v2.360dialog.io/messages", headers=headers, json=payload)
 
+            df.at[idx, "enviado"] = r.status_code == 200
+
             if r.status_code == 200:
-                st.success(f"✅ WhatsApp OK: {raw_number}")
+                st.success(f"✅ WhatsApp OK: {whatsapp_number}")
 
                 chatwoot_payload = {
-                    "phone": full_number,
+                    "phone": chatwoot_number,
                     "name": param_text_1 or "Cliente WhatsApp",
                     "content": mensaje_real
                 }
@@ -130,10 +134,10 @@ if file:
                 try:
                     cw = requests.post("https://webhook-chatwoot.onrender.com/send-chatwoot-message", json=chatwoot_payload)
                     if cw.status_code == 200:
-                        st.info(f"📥 Reflejado en Chatwoot: {raw_number}")
+                        st.info(f"📥 Reflejado en Chatwoot: {chatwoot_number}")
                     else:
-                        st.warning(f"⚠️ Error Chatwoot ({raw_number}): {cw.text}")
+                        st.warning(f"⚠️ Error Chatwoot ({chatwoot_number}): {cw.text}")
                 except Exception as e:
                     st.error(f"❌ Error Chatwoot: {e}")
             else:
-                st.error(f"❌ WhatsApp error ({raw_number}): {r.text}")
+                st.error(f"❌ WhatsApp error ({whatsapp_number}): {r.text}")

@@ -21,9 +21,10 @@ Te escribo para confirmar que el día de mañana tenemos programada la recolecci
     "recordatorio_24_hrs": lambda: "Buen día, estamos siguiendo tu solicitud, ¿Me ayudarías a confirmar si puedo validar la cantidad de tarimas que serán entregadas?"
 }
 
+# ✅ Forzar +521 para México si aplica
 def normalizar_numero(phone):
-    if phone.startswith("+521"):
-        return "+52" + phone[4:]
+    if phone.startswith("+52") and not phone.startswith("+521"):
+        return "+521" + phone[3:]
     return phone
 
 if file:
@@ -51,8 +52,8 @@ if file:
                 continue
 
             raw_number = f"{str(row[pais_col])}{str(row[telefono_col])}".replace(" ", "").replace("-", "")
-            chatwoot_number = f"+{raw_number}"
-            whatsapp_number = normalizar_numero(chatwoot_number)
+            chatwoot_number = normalizar_numero(f"+{raw_number}")
+            whatsapp_number = chatwoot_number
             nombre = str(row[nombre_col]).strip()
 
             plantilla_nombre = str(row[plantilla_col]).strip()

@@ -1,6 +1,8 @@
 import streamlit as st
 import pandas as pd
 import requests
+import datetime
+import os
 
 st.set_page_config(page_title="📨 Envío Masivo WhatsApp", layout="centered")
 st.title("📨 Envío Masivo de WhatsApp con Plantillas")
@@ -21,11 +23,15 @@ Te escribo para confirmar que el día de mañana tenemos programada la recolecci
     "recordatorio_24_hrs": lambda: "Buen día, estamos siguiendo tu solicitud, ¿Me ayudarías a confirmar si puedo validar la cantidad de tarimas que serán entregadas?"
 }
 
-# ✅ Forzar +521 para México si aplica
 def normalizar_numero(phone):
     if phone.startswith("+52") and not phone.startswith("+521"):
         return "+521" + phone[3:]
     return phone
+
+# Ruta del archivo Excel donde se guardarán los envíos
+archivo_envios = "envios_hoy.xlsx"
+if not os.path.exists(archivo_envios):
+    pd.DataFrame(columns=["Fecha", "Número", "Nombre"]).to_excel(archivo_envios, index=False)
 
 if file:
     df = pd.read_excel(file)
@@ -101,6 +107,23 @@ if file:
 
             if r.status_code == 200:
                 st.success(f"✅ WhatsApp enviado: {whatsapp_number}")
+
+                # Guardar en Excel solo Fecha, Número, Nombre
+                try:
+                    hoy = datetime.date.today().strftime('%Y-%m-%d')
+                    df_existente = pd.read_excel(archivo_envios)
+
+                    nuevo_registro = pd.DataFrame([{
+                        "Fecha": hoy,
+                        "Número": whatsapp_number,
+                        "Nombre": nombre
+                    }])
+
+                    df_actualizado = pd.concat([df_existente, nuevo_registro], ignore_index=True)
+                    df_actualizado.to_excel(archivo_envios, index=False)
+                    st.info(f"📊 Registrado en {archivo_envios}")
+                except Exception as e:
+                    st.warning(f"⚠️ No se pudo registrar el envío: {e}")
 
                 # Reflejar mensaje en Chatwoot
                 chatwoot_payload = {

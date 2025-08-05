@@ -11,8 +11,8 @@ st.title("📨 Envío Masivo de WhatsApp con Plantillas")
 if "ya_ejecuto" not in st.session_state:
     st.session_state["ya_ejecuto"] = False
 
-# API Key fija
-api_key = "I7yNB2t4EpJlPqxHF82mWXYTAK"
+# Ingreso seguro de API KEY
+api_key = st.text_input("🔐 Ingresa tu API Key de 360dialog", type="password")
 
 # Plantillas disponibles
 plantillas = {
@@ -39,7 +39,7 @@ if not os.path.exists(archivo_envios):
 # Subida de archivo Excel
 file = st.file_uploader("📁 Sube tu archivo Excel", type=["xlsx"])
 
-if file:
+if api_key and file:
     df = pd.read_excel(file)
     df.columns = df.columns.str.strip()
     st.success(f"Archivo cargado con {len(df)} registros.")
@@ -121,7 +121,7 @@ if file:
 
                 nuevo_registro = pd.DataFrame([{
                     "Fecha": hoy,
-                    "Número": f"'{whatsapp_number}",  # forzar como texto
+                    "Número": f"'{whatsapp_number}",
                     "Nombre": nombre,
                     "Estado": estado
                 }])
@@ -162,4 +162,3 @@ if os.path.exists(archivo_envios):
         )
     except Exception as e:
         st.warning(f"⚠️ No se pudo preparar archivo para descargar: {e}")
-

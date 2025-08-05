@@ -33,7 +33,7 @@ def normalizar_numero(phone):
 
 archivo_envios = "envios_hoy.xlsx"
 if not os.path.exists(archivo_envios):
-    pd.DataFrame(columns=["Fecha", "Número", "Nombre"]).to_excel(archivo_envios, index=False)
+    pd.DataFrame(columns=["Fecha", "Número", "Nombre", "Estado"]).to_excel(archivo_envios, index=False)
 
 if file:
     df = pd.read_excel(file)
@@ -102,24 +102,26 @@ if file:
             r = requests.post("https://waba-v2.360dialog.io/messages", headers=headers, json=payload)
             df.at[idx, "enviado"] = r.status_code == 200
 
+            hoy = datetime.date.today().strftime('%Y-%m-%d')
+            estado = "✅ Enviado" if r.status_code == 200 else f"❌ Falló ({r.status_code})"
+
+            nuevo_registro = pd.DataFrame([{
+                "Fecha": hoy,
+                "Número": whatsapp_number,
+                "Nombre": nombre,
+                "Estado": estado
+            }])
+
+            try:
+                df_existente = pd.read_excel(archivo_envios)
+                df_actualizado = pd.concat([df_existente, nuevo_registro], ignore_index=True)
+                df_actualizado.to_excel(archivo_envios, index=False)
+                st.info(f"📊 Registrado en {archivo_envios}")
+            except Exception as e:
+                st.warning(f"⚠️ No se pudo registrar el envío: {e}")
+
             if r.status_code == 200:
                 st.success(f"✅ WhatsApp enviado: {whatsapp_number}")
-
-                try:
-                    hoy = datetime.date.today().strftime('%Y-%m-%d')
-                    df_existente = pd.read_excel(archivo_envios)
-
-                    nuevo_registro = pd.DataFrame([{
-                        "Fecha": hoy,
-                        "Número": whatsapp_number,
-                        "Nombre": nombre
-                    }])
-
-                    df_actualizado = pd.concat([df_existente, nuevo_registro], ignore_index=True)
-                    df_actualizado.to_excel(archivo_envios, index=False)
-                    st.info(f"📊 Registrado en {archivo_envios}")
-                except Exception as e:
-                    st.warning(f"⚠️ No se pudo registrar el envío: {e}")
 
                 chatwoot_payload = {
                     "phone": chatwoot_number,
@@ -152,4 +154,5 @@ if os.path.exists(archivo_envios):
         )
     except Exception as e:
         st.warning(f"⚠️ No se pudo preparar archivo para descargar: {e}")
+
 

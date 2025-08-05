@@ -3,6 +3,7 @@ import pandas as pd
 import requests
 import datetime
 import os
+from io import BytesIO
 
 st.set_page_config(page_title="📨 Envío Masivo WhatsApp", layout="centered")
 st.title("📨 Envío Masivo de WhatsApp con Plantillas")
@@ -10,7 +11,9 @@ st.title("📨 Envío Masivo de WhatsApp con Plantillas")
 if "ya_ejecuto" not in st.session_state:
     st.session_state["ya_ejecuto"] = False
 
-api_key = st.text_input("🔐 Ingresa tu API Key de 360dialog", type="password")
+# API KEY fija
+api_key = "I7yNB2t4EpJlPqxHF82mWXYTAK"
+
 file = st.file_uploader("📁 Sube tu archivo Excel", type=["xlsx"])
 
 plantillas = {
@@ -28,7 +31,6 @@ def normalizar_numero(phone):
         return "+521" + phone[3:]
     return phone
 
-# Ruta del archivo Excel donde se guardarán los envíos
 archivo_envios = "envios_hoy.xlsx"
 if not os.path.exists(archivo_envios):
     pd.DataFrame(columns=["Fecha", "Número", "Nombre"]).to_excel(archivo_envios, index=False)
@@ -47,10 +49,6 @@ if file:
     param2_col = st.selectbox("🔢 Parámetro {{2}} (opcional):", ["(ninguno)"] + columnas)
 
     if st.button("🚀 Enviar mensajes") and not st.session_state["ya_ejecuto"]:
-        if not api_key:
-            st.error("⚠️ Falta API Key.")
-            st.stop()
-
         st.session_state["ya_ejecuto"] = True
 
         for idx, row in df.iterrows():
@@ -61,8 +59,8 @@ if file:
             chatwoot_number = normalizar_numero(f"+{raw_number}")
             whatsapp_number = chatwoot_number
             nombre = str(row[nombre_col]).strip()
-
             plantilla_nombre = str(row[plantilla_col]).strip()
+
             parameters = []
             param1 = ""
             param2 = ""
@@ -79,7 +77,6 @@ if file:
                     parameters.append({"type": "text", "text": param2})
                 mensaje_real = plantillas.get(plantilla_nombre, lambda x: f"Mensaje enviado con parámetro: {x}")(param1)
 
-            # Enviar mensaje por WhatsApp
             payload = {
                 "messaging_product": "whatsapp",
                 "to": whatsapp_number.replace("+", ""),
@@ -108,7 +105,6 @@ if file:
             if r.status_code == 200:
                 st.success(f"✅ WhatsApp enviado: {whatsapp_number}")
 
-                # Guardar en Excel solo Fecha, Número, Nombre
                 try:
                     hoy = datetime.date.today().strftime('%Y-%m-%d')
                     df_existente = pd.read_excel(archivo_envios)
@@ -125,7 +121,6 @@ if file:
                 except Exception as e:
                     st.warning(f"⚠️ No se pudo registrar el envío: {e}")
 
-                # Reflejar mensaje en Chatwoot
                 chatwoot_payload = {
                     "phone": chatwoot_number,
                     "name": nombre or "Cliente WhatsApp",
@@ -142,3 +137,19 @@ if file:
                     st.error(f"❌ Error al reflejar en Chatwoot: {e}")
             else:
                 st.error(f"❌ WhatsApp error ({whatsapp_number}): {r.text}")
+
+# 📥 Botón para descargar el Excel generado
+if os.path.exists(archivo_envios):
+    try:
+        df_final = pd.read_excel(archivo_envios)
+        output = BytesIO()
+        df_final.to_excel(output, index=False)
+        st.download_button(
+            label="📥 Descargar Excel de envíos",
+            data=output.getvalue(),
+            file_name="envios_hoy.xlsx",
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+        )
+    except Exception as e:
+        st.warning(f"⚠️ No se pudo preparar archivo para descargar: {e}")
+

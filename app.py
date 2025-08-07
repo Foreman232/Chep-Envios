@@ -30,6 +30,7 @@ def normalizar_numero(phone):
     return phone
 
 archivo_envios = "envios_hoy.xlsx"
+archivo_errores = "errores_envio_chatwoot.txt"
 if not os.path.exists(archivo_envios):
     pd.DataFrame(columns=["Fecha", "Número", "Nombre", "Estado"]).to_excel(archivo_envios, index=False)
 
@@ -43,7 +44,7 @@ if api_key and file:
 
     plantilla_col = st.selectbox("🧩 Columna plantilla:", columnas)
     telefono_col = st.selectbox("📱 Teléfono:", columnas)
-    nombre_col = st.selectbox("📇 Nombre:", columnas)
+    nombre_col = st.selectbox("📗 Nombre:", columnas)
     pais_col = st.selectbox("🌎 Código país:", columnas)
     param1_col = st.selectbox("🔢 Parámetro {{1}}:", ["(ninguno)"] + columnas)
     param2_col = st.selectbox("🔢 Parámetro {{2}} (opcional):", ["(ninguno)"] + columnas)
@@ -134,7 +135,7 @@ if api_key and file:
             except Exception as e:
                 st.warning(f"⚠️ No se pudo registrar el envío: {e}")
 
-            # Reflejar en Chatwoot si WhatsApp fue exitoso
+            # Reflejar en Chatwoot
             time.sleep(0.5)
             chatwoot_payload = {
                 "phone": chatwoot_number,
@@ -142,14 +143,22 @@ if api_key and file:
                 "content": mensaje_real + " [streamlit]"
             }
 
-            try:
-                cw = requests.post("https://webhook-chatwoots.onrender.com/send-chatwoot-message", json=chatwoot_payload)
-                if cw.status_code == 200:
-                    st.info(f"📥 Reflejado en Chatwoot: {chatwoot_number}")
-                else:
-                    st.warning(f"⚠️ Chatwoot error ({chatwoot_number}): {cw.text}")
-            except Exception as e:
-                st.error(f"❌ Error al reflejar en Chatwoot: {e}")
+            chatwoot_reflejado = False
+            for intento in range(2):
+                try:
+                    cw = requests.post("https://webhook-chatwoots.onrender.com/send-chatwoot-message", json=chatwoot_payload)
+                    if cw.status_code == 200:
+                        st.info(f"📥 Reflejado en Chatwoot: {chatwoot_number}")
+                        chatwoot_reflejado = True
+                        break
+                    else:
+                        st.warning(f"⚠️ Chatwoot error ({chatwoot_number}): {cw.text}")
+                except Exception as e:
+                    time.sleep(0.5)
+
+            if not chatwoot_reflejado:
+                with open(archivo_errores, "a") as f:
+                    f.write(f"{datetime.datetime.now()} - Error al reflejar {chatwoot_number}: {mensaje_real}\n")
 
 if os.path.exists(archivo_envios):
     try:

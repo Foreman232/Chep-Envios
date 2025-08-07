@@ -137,10 +137,14 @@ if api_key and file:
 
             # Reflejar en Chatwoot
             time.sleep(0.5)
+            mensaje_real = mensaje_real.strip()
+            if "[streamlit]" not in mensaje_real:
+                mensaje_real += " [streamlit]"
+
             chatwoot_payload = {
                 "phone": chatwoot_number,
                 "name": nombre or "Cliente WhatsApp",
-                "content": mensaje_real + " [streamlit]"
+                "content": mensaje_real
             }
 
             chatwoot_reflejado = False
@@ -160,6 +164,7 @@ if api_key and file:
                 with open(archivo_errores, "a") as f:
                     f.write(f"{datetime.datetime.now()} - Error al reflejar {chatwoot_number}: {mensaje_real}\n")
 
+# 📥 Botón para descargar el Excel de resultados
 if os.path.exists(archivo_envios):
     try:
         df_final = pd.read_excel(archivo_envios)
@@ -173,4 +178,5 @@ if os.path.exists(archivo_envios):
         )
     except Exception as e:
         st.warning(f"⚠️ No se pudo preparar archivo para descargar: {e}")
+
 

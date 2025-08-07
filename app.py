@@ -164,3 +164,4 @@ if os.path.exists(archivo_envios):
         )
     except Exception as e:
         st.warning(f"⚠️ No se pudo preparar archivo para descargar: {e}")
+

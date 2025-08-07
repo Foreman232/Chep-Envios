@@ -3,6 +3,7 @@ import pandas as pd
 import requests
 import datetime
 import os
+import time
 from io import BytesIO
 
 st.set_page_config(page_title="📨 Envío Masivo WhatsApp", layout="centered")
@@ -11,10 +12,8 @@ st.title("📨 Envío Masivo de WhatsApp con Plantillas")
 if "ya_ejecuto" not in st.session_state:
     st.session_state["ya_ejecuto"] = False
 
-# Ingreso seguro de API KEY
 api_key = st.text_input("🔐 Ingresa tu API Key de 360dialog", type="password")
 
-# Plantillas disponibles
 plantillas = {
     "mensaje_entre_semana_24_hrs": lambda localidad: f"""Buen día, te saludamos de CHEP (Tarimas azules), es un gusto en saludarte.
 
@@ -25,18 +24,15 @@ Te escribo para confirmar que el día de mañana tenemos programada la recolecci
     "recordatorio_24_hrs": lambda: "Buen día, estamos siguiendo tu solicitud, ¿Me ayudarías a confirmar si puedo validar la cantidad de tarimas que serán entregadas?"
 }
 
-# Normalizador de número para Chatwoot
 def normalizar_numero(phone):
     if phone.startswith("+52") and not phone.startswith("+521"):
         return "+521" + phone[3:]
     return phone
 
-# Archivo donde se guardan los resultados
 archivo_envios = "envios_hoy.xlsx"
 if not os.path.exists(archivo_envios):
     pd.DataFrame(columns=["Fecha", "Número", "Nombre", "Estado"]).to_excel(archivo_envios, index=False)
 
-# Subida de archivo Excel
 file = st.file_uploader("📁 Sube tu archivo Excel", type=["xlsx"])
 
 if api_key and file:
@@ -55,8 +51,11 @@ if api_key and file:
     if st.button("🚀 Enviar mensajes") and not st.session_state["ya_ejecuto"]:
         st.session_state["ya_ejecuto"] = True
 
+        if "enviado" not in df.columns:
+            df["enviado"] = False
+
         for idx, row in df.iterrows():
-            if "enviado" in df.columns and row.get("enviado") == True:
+            if row.get("enviado") == True:
                 continue
 
             raw_number = f"{str(row[pais_col])}{str(row[telefono_col])}".replace(" ", "").replace("-", "")
@@ -81,7 +80,6 @@ if api_key and file:
                     parameters.append({"type": "text", "text": param2})
                 mensaje_real = plantillas.get(plantilla_nombre, lambda x: f"Mensaje enviado con parámetro: {x}")(param1)
 
-            # Payload para WhatsApp
             payload = {
                 "messaging_product": "whatsapp",
                 "to": whatsapp_number.replace("+", ""),
@@ -104,7 +102,11 @@ if api_key and file:
                 "D360-API-KEY": api_key
             }
 
-            r = requests.post("https://waba-v2.360dialog.io/messages", headers=headers, json=payload)
+            for intento in range(2):
+                r = requests.post("https://waba-v2.360dialog.io/messages", headers=headers, json=payload)
+                if r.status_code == 200:
+                    break
+
             enviado = r.status_code == 200
             df.at[idx, "enviado"] = enviado
             estado = "✅ Enviado" if enviado else f"❌ Falló ({r.status_code})"
@@ -113,8 +115,8 @@ if api_key and file:
                 st.success(f"✅ WhatsApp enviado: {whatsapp_number}")
             else:
                 st.error(f"❌ WhatsApp error ({whatsapp_number}): {r.text}")
+                continue
 
-            # Guardar en Excel
             try:
                 hoy = datetime.date.today().strftime('%Y-%m-%d')
                 df_existente = pd.read_excel(archivo_envios)
@@ -132,11 +134,12 @@ if api_key and file:
             except Exception as e:
                 st.warning(f"⚠️ No se pudo registrar el envío: {e}")
 
-            # Reflejar en Chatwoot
+            # Reflejar en Chatwoot si WhatsApp fue exitoso
+            time.sleep(0.5)
             chatwoot_payload = {
                 "phone": chatwoot_number,
                 "name": nombre or "Cliente WhatsApp",
-                "content": mensaje_real
+                "content": mensaje_real + " [streamlit]"
             }
 
             try:
@@ -148,7 +151,6 @@ if api_key and file:
             except Exception as e:
                 st.error(f"❌ Error al reflejar en Chatwoot: {e}")
 
-# 📥 Botón para descargar el Excel de resultados
 if os.path.exists(archivo_envios):
     try:
         df_final = pd.read_excel(archivo_envios)

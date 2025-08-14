@@ -12,27 +12,26 @@ import hashlib
 import json
 import threading
 
-# =============== UI ===============
-st.set_page_config(page_title="📨 Envío Masivo WhatsApp Optimizado", layout="wide")
-st.title("📨 Envío Masivo de WhatsApp (Plantillas) — Optimizado ⚡")
+# ===================== UI / CONFIG =====================
+st.set_page_config(page_title="📨 Envío Masivo WhatsApp (Optimizado)", layout="wide")
+st.title("📨 Envío Masivo de WhatsApp — Plantillas ⚡ Rápido y Estable")
 
 colA, colB, colC = st.columns(3)
 with colA:
     api_key = st.text_input("🔐 360dialog API Key", type="password")
 with colB:
-    max_workers = st.slider("🧵 Concurrencia (hilos)", min_value=2, max_value=32, value=12, step=2)
+    max_workers = st.slider("🧵 Concurrencia (hilos)", min_value=2, max_value=32, value=16, step=2)
 with colC:
     reflect_chatwoot = st.toggle("📥 Reflejar en Chatwoot", value=True)
 
-# Endpoint de tu webhook Node (NO el de Render viejo)
+# 👉 Usa tu webhook Node actual (no el de Render viejo)
 CW_URL = "https://srv904439.hstgr.cloud:10000/send-chatwoot-message"
 
-# Archivos de estado
 ARCHIVO_ENV = "envios_hoy.xlsx"
 ARCHIVO_FAIL = "fallidos.xlsx"
 ARCHIVO_CHECK = "checkpoint_envios.json"
 
-# =============== Helpers ===============
+# ===================== Helpers =====================
 def normalizar_numero(phone: str) -> str:
     if not phone:
         return phone
@@ -44,29 +43,27 @@ def normalizar_numero(phone: str) -> str:
     return p
 
 def idempotency_key(row_dict: dict) -> str:
-    # Hash estable para evitar duplicados por reintentos/caídas
     base = json.dumps(row_dict, sort_keys=True, ensure_ascii=False)
     return hashlib.sha256(base.encode("utf-8")).hexdigest()[:16]
 
 def build_sessions(api_key: str):
-    # 360dialog session
+    # 360dialog con pool + retries
     d360 = requests.Session()
     retries = Retry(
         total=5,
-        backoff_factor=0.8,            # backoff exponencial
+        backoff_factor=0.8,
         status_forcelist=[429, 500, 502, 503, 504],
         allowed_methods=["POST"]
     )
-    adapter = HTTPAdapter(pool_connections=100, pool_maxsize=100, max_retries=retries)
+    adapter = HTTPAdapter(pool_connections=200, pool_maxsize=200, max_retries=retries)
     d360.mount("https://", adapter)
     d360.headers.update({"Content-Type": "application/json", "D360-API-KEY": api_key})
 
-    # Chatwoot session
+    # Chatwoot con pool + retries
     cw = requests.Session()
-    cw_adapter = HTTPAdapter(pool_connections=50, pool_maxsize=50, max_retries=retries)
+    cw_adapter = HTTPAdapter(pool_connections=100, pool_maxsize=100, max_retries=retries)
     cw.mount("https://", cw_adapter)
     cw.headers.update({"Content-Type": "application/json"})
-
     return d360, cw
 
 def send_360_template(d360: requests.Session, to_number: str, template_name: str, params):
@@ -74,23 +71,17 @@ def send_360_template(d360: requests.Session, to_number: str, template_name: str
         "messaging_product": "whatsapp",
         "to": to_number.replace("+", ""),
         "type": "template",
-        "template": {
-            "name": template_name,
-            "language": {"code": "es_MX"},
-            "components": []
-        }
+        "template": {"name": template_name, "language": {"code": "es_MX"}, "components": []}
     }
     if params:
         payload["template"]["components"].append({"type": "body", "parameters": params})
 
-    # Envío con respeto de Retry-After si 429
     resp = d360.post("https://waba-v2.360dialog.io/messages", json=payload, timeout=25)
     if resp.status_code == 429:
         ra = resp.headers.get("Retry-After")
         wait_s = int(ra) if ra and ra.isdigit() else 3
         time.sleep(wait_s)
         resp = d360.post("https://waba-v2.360dialog.io/messages", json=payload, timeout=25)
-
     ok = 200 <= resp.status_code < 300
     return ok, resp.text, resp.status_code
 
@@ -98,12 +89,11 @@ def reflect_to_chatwoot(cw: requests.Session, phone: str, name: str, content: st
     content = (content or "").strip()
     if "[streamlit]" not in content:
         content += " [streamlit]"
-    payload = {"phone": phone, "name": name or "Cliente WhatsApp", "content": content}
+    payload = {"phone": phone, "name": name or 'Cliente WhatsApp', "content": content}
     try:
         r = cw.post(CW_URL, json=payload, timeout=15)
         if 200 <= r.status_code < 300:
             return True, r.text, r.status_code
-        # Si 429, backoff cortito
         if r.status_code == 429:
             time.sleep(2.0)
             r2 = cw.post(CW_URL, json=payload, timeout=15)
@@ -113,12 +103,7 @@ def reflect_to_chatwoot(cw: requests.Session, phone: str, name: str, content: st
         return False, str(e), -1
 
 def guardar_checkpoint(pendientes, enviados, fallidos):
-    data = {
-        "ts": time.time(),
-        "pendientes": pendientes,
-        "enviados": enviados,
-        "fallidos": fallidos,
-    }
+    data = {"ts": time.time(), "pendientes": pendientes, "enviados": enviados, "fallidos": fallidos}
     with open(ARCHIVO_CHECK, "w", encoding="utf-8") as f:
         json.dump(data, f, ensure_ascii=False)
 
@@ -139,12 +124,12 @@ def registrar_excel(numero, nombre, estado):
         df_exist = pd.read_excel(ARCHIVO_ENV)
         nuevo = pd.DataFrame([{"Fecha": hoy, "Número": f"'{numero}", "Nombre": nombre, "Estado": estado}])
         pd.concat([df_exist, nuevo], ignore_index=True).to_excel(ARCHIVO_ENV, index=False)
-    except Exception as e:
-        # Evitar que una falla de Excel tire todo
+    except:
         pass
 
-# =============== Carga de archivo ===============
+# ===================== Carga de archivo =====================
 file = st.file_uploader("📁 Sube tu Excel", type=["xlsx"])
+
 if file and api_key:
     df = pd.read_excel(file)
     df.columns = df.columns.str.strip()
@@ -162,22 +147,18 @@ if file and api_key:
     with c6: p2_col = st.selectbox("🔢 Parámetro {{2}}", ["(ninguno)"] + cols)
 
     if st.button("🚀 Enviar (rápido y tolerante a fallas)"):
+        start_time = time.time()
         d360, cw = build_sessions(api_key)
 
-        # Estado compartido entre hilos
         lock = threading.Lock()
+        stats = {"enviados_ok": 0, "fallidos_cnt": 0, "reflejados_ok": 0, "completed": 0}
+
         total = len(df)
-        enviados_ok = 0
-        fallidos_cnt = 0
-        reflejados_ok = 0
-        tareas = []
-        fallidos_rows = []
-
-        progress = st.progress(0.0)
-        status = st.empty()
-
-        # Preparamos lote de trabajo con idempotency keys para resume
         trabajos = []
+        fallidos_rows = []
+        enviados_set = set()
+
+        # Preparar trabajos
         for i, row in df.iterrows():
             tel = normalizar_numero(f"+{str(row[pais_col])}{str(row[tel_col])}")
             nombre = str(row[nombre_col]).strip() if pd.notna(row[nombre_col]) else "Cliente WhatsApp"
@@ -186,88 +167,82 @@ if file and api_key:
             params = []
             p1 = "" if p1_col == "(ninguno)" or pd.isna(row.get(p1_col)) else str(row[p1_col])
             p2 = "" if p2_col == "(ninguno)" or pd.isna(row.get(p2_col)) else str(row[p2_col])
-            if p1_col != "(ninguno)":
-                params.append({"type": "text", "text": p1})
-            if p2_col != "(ninguno)":
-                params.append({"type": "text", "text": p2})
+            if p1_col != "(ninguno)": params.append({"type": "text", "text": p1})
+            if p2_col != "(ninguno)": params.append({"type": "text", "text": p2})
 
-            # Texto humano para reflejo
             if plantilla == "recordatorio_24_hrs":
                 mensaje_humano = "Buen día, estamos siguiendo tu solicitud, ¿Me ayudarías a confirmar si puedo validar la cantidad de tarimas que serán entregadas?"
             else:
                 mensaje_humano = f"Mensaje enviado con parámetro: {p1}"
 
-            job = {
-                "tel": tel, "nombre": nombre, "plantilla": plantilla,
-                "params": params, "mensaje": mensaje_humano
-            }
+            job = {"tel": tel, "nombre": nombre, "plantilla": plantilla,
+                   "params": params, "mensaje": mensaje_humano}
             job["key"] = idempotency_key({"to": tel, "tpl": plantilla, "p1": p1, "p2": p2})
             trabajos.append(job)
 
-        # Si hay checkpoint, filtramos los ya enviados
+        # Resume desde checkpoint si existe
         cp = cargar_checkpoint()
-        ya_enviados_keys = set()
         if cp and "enviados" in cp:
-            ya_enviados_keys = set(cp["enviados"])
-            trabajos = [t for t in trabajos if t["key"] not in ya_enviados_keys]
-            st.info(f"🔁 Reanudando: {len(ya_enviados_keys)} ya enviados, {len(trabajos)} pendientes.")
+            ya = set(cp["enviados"])
+            trabajos = [t for t in trabajos if t["key"] not in ya]
+            enviados_set |= ya
+            st.info(f"🔁 Reanudando: {len(ya)} ya enviados, {len(trabajos)} pendientes.")
 
-        enviados_set = set(ya_enviados_keys)
         pendientes_keys = [t["key"] for t in trabajos]
 
+        progress = st.progress(0.0)
+        status = st.empty()
+
         def tarea(job):
-            nonlocal enviados_ok, fallidos_cnt, reflejados_ok
-            tel = job["tel"]
-            nombre = job["nombre"]
-            plantilla = job["plantilla"]
-            params = job["params"]
-            mensaje = job["mensaje"]
-            key = job["key"]
+            tel = job["tel"]; nombre = job["nombre"]
+            plantilla = job["plantilla"]; params = job["params"]
+            mensaje = job["mensaje"]; key = job["key"]
 
             ok, txt, code = send_360_template(d360, tel, plantilla, params)
             if ok:
                 registrar_excel(tel, nombre, "✅ Enviado")
                 with lock:
-                    enviados_ok += 1
+                    stats["enviados_ok"] += 1
                     enviados_set.add(key)
             else:
                 with lock:
-                    fallidos_cnt += 1
+                    stats["fallidos_cnt"] += 1
                     fallidos_rows.append({"Número": tel, "Nombre": nombre, "Plantilla": plantilla, "Respuesta": txt, "Code": code})
                 registrar_excel(tel, nombre, f"❌ Falló ({code})")
-                return  # Si falla WhatsApp, no reflejamos
+                return  # si falla WhatsApp, no reflejar
 
             if reflect_chatwoot:
-                ok_cw, txt_cw, code_cw = reflect_to_chatwoot(cw, tel, nombre, mensaje)
+                ok_cw, _, _ = reflect_to_chatwoot(cw, tel, nombre, mensaje)
                 if ok_cw:
                     with lock:
-                        reflejados_ok += 1
+                        stats["reflejados_ok"] += 1
 
-        # Ejecutamos en paralelo
-        checkpoint_every = max(20, math.ceil(total * 0.02))  # guarda cada 2% o cada 20, lo que sea mayor
-        completed = 0
+        checkpoint_every = max(20, math.ceil(total * 0.02))
         with ThreadPoolExecutor(max_workers=max_workers) as ex:
             futures = [ex.submit(tarea, job) for job in trabajos]
             for fut in as_completed(futures):
-                completed += 1
-                # Guardar checkpoint cada cierto avance
+                with lock:
+                    stats["completed"] += 1
+                    completed = stats["completed"]
+
                 if completed % checkpoint_every == 0:
                     try:
                         guardar_checkpoint(pendientes_keys, list(enviados_set), [f["Número"] for f in fallidos_rows])
                     except:
                         pass
 
-                pct = (len(ya_enviados_keys) + completed) / total
+                pct = (len(enviados_set)) / total
+                elapsed = max(1, time.time() - start_time)
+                tasa = len(enviados_set) / elapsed  # msgs por segundo reales
                 progress.progress(min(1.0, pct))
                 status.markdown(
-                    f"**Progreso:** {pct:.0%} | ✅ Enviados: {enviados_ok} | 📥 Reflejados: {reflejados_ok} | ❌ Fallidos: {fallidos_cnt}"
+                    f"**Progreso:** {pct:.0%} | ⏱️ {elapsed:.0f}s | ⚡ {tasa:.2f} msg/s\n\n"
+                    f"✅ Enviados: {stats['enviados_ok']} | 📥 Reflejados: {stats['reflejados_ok']} | ❌ Fallidos: {stats['fallidos_cnt']}"
                 )
 
-        # Guardar fallidos a Excel si los hubo
         if fallidos_rows:
             pd.DataFrame(fallidos_rows).to_excel(ARCHIVO_FAIL, index=False)
 
-        # Checkpoint final
         try:
             guardar_checkpoint(pendientes_keys, list(enviados_set), [f["Número"] for f in fallidos_rows])
         except:

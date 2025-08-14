@@ -1,283 +1,248 @@
 import streamlit as st
 import pandas as pd
 import requests
+import datetime
 import os
 import time
-import datetime
-import math
 from io import BytesIO
-from concurrent.futures import ThreadPoolExecutor, as_completed
-from requests.adapters import HTTPAdapter, Retry
-import hashlib
-import json
-import threading
+import decimal
 
-# ===================== UI / CONFIG =====================
-st.set_page_config(page_title="📨 Envío Masivo de WhatsApp — Plantillas ⚡", layout="wide")
-st.title("📨 Envío Masivo de WhatsApp — Plantillas ⚡ Rápido y Estable")
+st.set_page_config(page_title="📨 Envío Masivo WhatsApp", layout="centered")
+st.title("📨 Envío Masivo de WhatsApp con Plantillas")
 
-colA, colB, colC = st.columns(3)
-with colA:
-    api_key = st.text_input("🔐 360dialog API Key", type="password")
-with colB:
-    max_workers = st.slider("🧵 Concurrencia (hilos)", min_value=2, max_value=32, value=16, step=2)
-with colC:
-    pause_on_429 = st.toggle("⏸️ Respetar Retry-After (429)", value=True)
+if "ya_ejecuto" not in st.session_state:
+    st.session_state["ya_ejecuto"] = False
 
-ARCHIVO_ENV = "envios_hoy.xlsx"
-ARCHIVO_FAIL = "fallidos.xlsx"
-ARCHIVO_CHECK = "checkpoint_envios.json"
+api_key = st.text_input("🔐 Ingresa tu API Key de 360dialog", type="password")
 
-# ===================== Reglas por plantilla (AQUÍ defines cuántos params acepta cada una) =====================
-TEMPLATE_PARAM_COUNTS = {
-    "mensaje_entre_semana_24_hrs": 1,   # {{1}} = localidad
-    "recordatorio_24_hrs": 0,           # no acepta parámetros
-    # agrega aquí más plantillas: "nombre": número_de_parámetros
+# ---- Plantillas (texto humano solo para reflejo/log) ----
+plantillas = {
+    "mensaje_entre_semana_24_hrs": lambda localidad: (
+        "Buen día, te saludamos de CHEP (Tarimas azules), es un gusto en saludarte.\n\n"
+        f"Te escribo para confirmar que el día de mañana tenemos programada la recolección de tarimas "
+        f"en tu localidad: {localidad}.\n\n"
+        "¿Me podrías indicar cuántas tarimas tienes para entregar? Así podremos coordinar la unidad."
+    ),
+    "recordatorio_24_hrs": lambda: (
+        "Buen día, estamos siguiendo tu solicitud, ¿Me ayudarías a confirmar si puedo validar la cantidad de tarimas que serán entregadas?"
+    )
 }
 
-LANG_CODE = "es_MX"  # ajusta si tu plantilla está aprobada en otro idioma
+# ---- Reglas de cuántos parámetros acepta cada plantilla ----
+TEMPLATE_PARAM_COUNTS = {
+    "mensaje_entre_semana_24_hrs": 1,
+    "recordatorio_24_hrs": 0,
+}
 
-# ===================== Helpers =====================
-def normalizar_numero(phone: str) -> str:
-    if not phone:
-        return phone
-    p = str(phone).strip().replace(" ", "").replace("-", "")
-    if not p.startswith("+"):
-        p = "+" + p
-    if p.startswith("+52") and not p.startswith("+521"):
-        p = "+521" + p[3:]
-    return p
+LANG_CODE = "es_MX"
 
-def idempotency_key(row_dict: dict) -> str:
-    base = json.dumps(row_dict, sort_keys=True, ensure_ascii=False)
-    return hashlib.sha256(base.encode("utf-8")).hexdigest()[:16]
-
-def build_session_360(api_key: str):
-    s = requests.Session()
-    retries = Retry(
-        total=5,
-        backoff_factor=0.8,
-        status_forcelist=[429, 500, 502, 503, 504],
-        allowed_methods=["POST"]
-    )
-    adapter = HTTPAdapter(pool_connections=200, pool_maxsize=200, max_retries=retries)
-    s.mount("https://", adapter)
-    s.headers.update({"Content-Type": "application/json", "D360-API-KEY": api_key})
-    return s
-
-def render_template_preview(name: str, p1: str = "", p2: str = "") -> str:
-    name = (name or "").strip()
-
-    if name == "mensaje_entre_semana_24_hrs":
-        # p1 = localidad
-        return (
-            "Buen día, te saludamos de CHEP (Tarimas azules), es un gusto en saludarte.\n\n"
-            f"Te escribo para confirmar que el día de mañana tenemos programada la recolección de tarimas "
-            f"en tu localidad: {p1}.\n\n"
-            "¿Me podrías indicar cuántas tarimas tienes para entregar? Así podremos coordinar la unidad."
-        )
-
-    if name == "recordatorio_24_hrs":
-        return (
-            "Buen día, estamos siguiendo tu solicitud, "
-            "¿Me ayudarías a confirmar si puedo validar la cantidad de tarimas que serán entregadas?"
-        )
-
-    # Genérico si aparece otra plantilla
-    cuerpo = "Plantilla enviada."
-    if p1 and p2:
-        cuerpo += f" Parámetros: {p1} | {p2}"
-    elif p1:
-        cuerpo += f" Parámetro: {p1}"
-    return cuerpo
-
-def send_360_template(session_360: requests.Session, to_number: str, template_name: str, params, pause_on_429=True):
-    payload = {
-        "messaging_product": "whatsapp",
-        "to": to_number.replace("+", ""),
-        "type": "template",
-        "template": {"name": template_name, "language": {"code": LANG_CODE}, "components": []}
-    }
-    if params:  # solo si hay params válidos
-        payload["template"]["components"].append({"type": "body", "parameters": params})
-
-    resp = session_360.post("https://waba-v2.360dialog.io/messages", json=payload, timeout=25)
-    if pause_on_429 and resp.status_code == 429:
-        ra = resp.headers.get("Retry-After")
-        wait_s = int(ra) if ra and ra.isdigit() else 3
-        time.sleep(wait_s)
-        resp = session_360.post("https://waba-v2.360dialog.io/messages", json=payload, timeout=25)
-
-    ok = 200 <= resp.status_code < 300
-    return ok, resp.text, resp.status_code
-
-def guardar_checkpoint(pendientes, enviados, fallidos):
-    data = {"ts": time.time(), "pendientes": pendientes, "enviados": enviados, "fallidos": fallidos}
-    with open(ARCHIVO_CHECK, "w", encoding="utf-8") as f:
-        json.dump(data, f, ensure_ascii=False)
-
-def cargar_checkpoint():
-    if not os.path.exists(ARCHIVO_CHECK):
-        return None
+# ================== Helpers ==================
+def _clean_num_component(x):
+    """Convierte 5.55e+09 / 5548917590.0 a '5548917590' (solo dígitos)."""
+    if x is None:
+        return ""
+    s = str(x).strip()
     try:
-        with open(ARCHIVO_CHECK, "r", encoding="utf-8") as f:
-            return json.load(f)
-    except:
-        return None
-
-def registrar_excel(numero, nombre, estado):
-    try:
-        hoy = datetime.date.today().strftime('%Y-%m-%d')
-        if not os.path.exists(ARCHIVO_ENV):
-            pd.DataFrame(columns=["Fecha", "Número", "Nombre", "Estado"]).to_excel(ARCHIVO_ENV, index=False)
-        df_exist = pd.read_excel(ARCHIVO_ENV)
-        nuevo = pd.DataFrame([{"Fecha": hoy, "Número": f"'{numero}", "Nombre": nombre, "Estado": estado}])
-        pd.concat([df_exist, nuevo], ignore_index=True).to_excel(ARCHIVO_ENV, index=False)
-    except:
+        if "e" in s.lower():
+            s = format(decimal.Decimal(s), "f")
+    except Exception:
         pass
+    if s.endswith(".0"):
+        s = s[:-2]
+    return "".join(ch for ch in s if ch.isdigit())
 
-def expected_params_for_template(template_name: str) -> int:
-    return TEMPLATE_PARAM_COUNTS.get((template_name or "").strip(), 0)
+def normalizar_numero_e164(codigo_pais, telefono):
+    pais = _clean_num_component(codigo_pais)
+    fono = _clean_num_component(telefono)
+    if not pais or not fono:
+        return ""
+    e164 = f"+{pais}{fono}"
+    # MX -> +521
+    if e164.startswith("+52") and not e164.startswith("+521"):
+        e164 = "+521" + e164[3:]
+    return e164
 
-# ===================== Carga de archivo =====================
-file = st.file_uploader("📁 Sube tu Excel (con columnas de país, teléfono, plantilla y parámetros)", type=["xlsx"])
+# ================== Archivos ==================
+archivo_envios = "envios_hoy.xlsx"
+archivo_errores = "errores_envio_chatwoot.txt"
+if not os.path.exists(archivo_envios):
+    pd.DataFrame(columns=["Fecha", "Número", "Nombre", "Estado"]).to_excel(archivo_envios, index=False)
 
-if file and api_key:
+file = st.file_uploader("📁 Sube tu archivo Excel", type=["xlsx"])
+
+if api_key and file:
     df = pd.read_excel(file)
     df.columns = df.columns.str.strip()
     st.success(f"Archivo cargado con {len(df)} registros.")
+    columnas = df.columns.tolist()
 
-    cols = df.columns.tolist()
-    c1, c2, c3, c4 = st.columns(4)
-    with c1: plantilla_col = st.selectbox("🧩 Columna plantilla", cols)
-    with c2: tel_col = st.selectbox("📱 Teléfono", cols)
-    with c3: nombre_col = st.selectbox("📗 Nombre", cols)
-    with c4: pais_col = st.selectbox("🌎 Código país", cols)
+    plantilla_col = st.selectbox("🧩 Columna plantilla:", columnas)
+    telefono_col = st.selectbox("📱 Teléfono:", columnas)
+    nombre_col = st.selectbox("📗 Nombre:", columnas)
+    pais_col = st.selectbox("🌎 Código país:", columnas)
+    param1_col = st.selectbox("🔢 Parámetro {{1}}:", ["(ninguno)"] + columnas)
+    param2_col = st.selectbox("🔢 Parámetro {{2}} (opcional):", ["(ninguno)"] + columnas)
 
-    c5, c6 = st.columns(2)
-    with c5: p1_col = st.selectbox("🔢 Parámetro {{1}}", ["(ninguno)"] + cols)
-    with c6: p2_col = st.selectbox("🔢 Parámetro {{2}}", ["(ninguno)"] + cols)
+    if st.button("🚀 Enviar mensajes") and not st.session_state["ya_ejecuto"]:
+        st.session_state["ya_ejecuto"] = True
 
-    if st.button("🚀 Enviar (rápido y tolerante a fallas)"):
-        start_time = time.time()
-        session_360 = build_session_360(api_key)
+        if "enviado" not in df.columns:
+            df["enviado"] = False
 
-        # Estado compartido
-        lock = threading.Lock()
-        stats = {"enviados_ok": 0, "fallidos_cnt": 0, "completed": 0}
-
-        total = len(df)
-        trabajos = []
-        fallidos_rows = []
-        enviados_set = set()
-
-        # Preparar trabajos
-        for _, row in df.iterrows():
-            tel = normalizar_numero(f"+{str(row[pais_col])}{str(row[tel_col])}")
-            nombre = str(row[nombre_col]).strip() if pd.notna(row[nombre_col]) else "Cliente WhatsApp"
-            plantilla = str(row[plantilla_col]).strip()
-
-            # Lee p1/p2 desde columnas, pero NO los mandes aún
-            p1_raw = "" if p1_col == "(ninguno)" or pd.isna(row.get(p1_col)) else str(row[p1_col]).strip()
-            p2_raw = "" if p2_col == "(ninguno)" or pd.isna(row.get(p2_col)) else str(row[p2_col]).strip()
-
-            # Cuántos parámetros acepta esta plantilla
-            needed = expected_params_for_template(plantilla)
-
-            # Construye params solo hasta 'needed', ignora extras (compatibilidad con tu app original)
-            params = []
-            if needed >= 1 and p1_raw:
-                params.append({"type": "text", "text": p1_raw})
-            if needed >= 2 and p2_raw:
-                params.append({"type": "text", "text": p2_raw})
-
-            # Validación por fila
-            present = len(params)
-            if present != needed:
-                # Si falta alguno requerido -> marcar fallido con mensaje claro
-                fallidos_rows.append({
-                    "Número": tel, "Nombre": nombre, "Plantilla": plantilla,
-                    "Respuesta": f"La plantilla '{plantilla}' espera {needed} parámetro(s) y se recibieron {present}.",
-                    "Code": 0
-                })
-                registrar_excel(tel, nombre, f"❌ Configuración inválida: espera {needed}, llegó {present}")
+        for idx, row in df.iterrows():
+            if row.get("enviado") is True:
                 continue
 
-            # Texto humano para preview (tu Node ya lo renderiza en Chatwoot)
-            p1 = p1_raw if needed >= 1 else ""
-            p2 = p2_raw if needed >= 2 else ""
-            mensaje_humano = render_template_preview(plantilla, p1, p2)
+            # --------- Número limpio y normalizado ---------
+            chatwoot_number = normalizar_numero_e164(row[pais_col], row[telefono_col])
+            if not chatwoot_number:
+                st.error(f"❌ Número inválido en fila {idx+1}")
+                continue
+            whatsapp_number = chatwoot_number  # e164 con '+'
+            to_number = whatsapp_number.replace("+", "")
 
-            job = {"tel": tel, "nombre": nombre, "plantilla": plantilla,
-                   "params": params, "p1": p1, "p2": p2, "mensaje": mensaje_humano}
-            job["key"] = idempotency_key({"to": tel, "tpl": plantilla, "p1": p1, "p2": p2})
-            trabajos.append(job)
+            nombre = (str(row[nombre_col]).strip()
+                      if pd.notna(row[nombre_col]) else "Cliente WhatsApp")
+            plantilla_nombre = (str(row[plantilla_col]).strip()
+                                if pd.notna(row[plantilla_col]) else "")
 
-        # Reanudar si hay checkpoint
-        cp = cargar_checkpoint()
-        if cp and "enviados" in cp:
-            ya = set(cp["enviados"])
-            trabajos = [t for t in trabajos if t["key"] not in ya]
-            enviados_set |= ya
-            st.info(f"🔁 Reanudando: {len(ya)} ya enviados, {len(trabajos)} pendientes.")
+            # --------- Valida plantilla / parámetros ---------
+            expected = TEMPLATE_PARAM_COUNTS.get(plantilla_nombre, None)
+            if expected is None:
+                st.error(f"❌ Plantilla desconocida '{plantilla_nombre}' en fila {idx+1}")
+                continue
 
-        pendientes_keys = [t["key"] for t in trabajos]
+            parameters = []
+            p1 = "" if param1_col == "(ninguno)" or pd.isna(row.get(param1_col)) else str(row[param1_col]).strip()
+            p2 = "" if param2_col == "(ninguno)" or pd.isna(row.get(param2_col)) else str(row[param2_col]).strip()
 
-        progress = st.progress(0.0)
-        status = st.empty()
+            if expected >= 1 and p1:
+                parameters.append({"type": "text", "text": p1})
+            if expected >= 2 and p2:
+                parameters.append({"type": "text", "text": p2})
 
-        def tarea(job):
-            tel = job["tel"]; nombre = job["nombre"]
-            plantilla = job["plantilla"]; params = job["params"]
-            key = job["key"]
+            if expected > 0 and len(parameters) != expected:
+                st.error(f"❌ La plantilla '{plantilla_nombre}' espera {expected} parámetro(s) y llegó {len(parameters)} (fila {idx+1}).")
+                continue
 
-            ok, txt, code = send_360_template(session_360, tel, plantilla, params, pause_on_429)
-            if ok:
-                registrar_excel(tel, nombre, "✅ Enviado")
-                with lock:
-                    stats["enviados_ok"] += 1
-                    enviados_set.add(key)
+            # --------- Mensaje "humano" solo para reflejo/log ---------
+            if plantilla_nombre == "recordatorio_24_hrs":
+                mensaje_real = plantillas["recordatorio_24_hrs"]()
+            elif plantilla_nombre == "mensaje_entre_semana_24_hrs":
+                # usa p1 como {{1}} (tú decides qué columna mapeas en la UI)
+                mensaje_real = plantillas["mensaje_entre_semana_24_hrs"](p1 or "")
             else:
-                with lock:
-                    stats["fallidos_cnt"] += 1
-                    fallidos_rows.append({"Número": tel, "Nombre": nombre, "Plantilla": plantilla, "Respuesta": txt, "Code": code})
-                registrar_excel(tel, nombre, f"❌ Falló ({code})")
+                # genérico
+                mensaje_real = f"Plantilla {plantilla_nombre} enviada."
 
-        checkpoint_every = max(20, math.ceil(total * 0.02))
-        with ThreadPoolExecutor(max_workers=max_workers) as ex:
-            futures = [ex.submit(tarea, job) for job in trabajos]
-            for fut in as_completed(futures):
-                with lock:
-                    stats["completed"] += 1
-                    completed = stats["completed"]
+            # --------- Payload 360dialog ---------
+            payload = {
+                "messaging_product": "whatsapp",
+                "to": to_number,                       # sin '+'
+                "type": "template",
+                "template": {
+                    "name": plantilla_nombre,
+                    "language": {"code": "es_MX"}
+                }
+            }
+            if expected > 0:
+                payload["template"]["components"] = [{"type": "body", "parameters": parameters}]
+            # si expected == 0, NO se agrega components (esto evita el 400)
 
-                if completed % checkpoint_every == 0:
-                    try:
-                        guardar_checkpoint(pendientes_keys, list(enviados_set), [f["Número"] for f in fallidos_rows])
-                    except:
-                        pass
+            headers = {
+                "Content-Type": "application/json",
+                "D360-API-KEY": api_key
+            }
 
-                pct = (len(enviados_set)) / total if total else 1.0
-                elapsed = max(1, time.time() - start_time)
-                tasa = (len(enviados_set) / elapsed) if elapsed else 0
-                progress.progress(min(1.0, pct))
-                status.markdown(
-                    f"**Progreso:** {pct:.0%} | ⏱️ {elapsed:.0f}s | ⚡ {tasa:.2f} msg/s  \n"
-                    f"✅ Enviados: {stats['enviados_ok']} | ❌ Fallidos: {stats['fallidos_cnt']}"
-                )
+            # --------- Envío con 1 reintento simple ---------
+            r = requests.post("https://waba-v2.360dialog.io/messages", headers=headers, json=payload)
+            if r.status_code == 429:
+                # respeta Retry-After si viene
+                ra = r.headers.get("Retry-After")
+                wait_s = int(ra) if ra and ra.isdigit() else 3
+                time.sleep(wait_s)
+                r = requests.post("https://waba-v2.360dialog.io/messages", headers=headers, json=payload)
 
-        if fallidos_rows:
-            pd.DataFrame(fallidos_rows).to_excel(ARCHIVO_FAIL, index=False)
+            enviado = 200 <= r.status_code < 300
+            df.at[idx, "enviado"] = enviado
+            estado = "✅ Enviado" if enviado else f"❌ Falló ({r.status_code})"
 
-        try:
-            guardar_checkpoint(pendientes_keys, list(enviados_set), [f["Número"] for f in fallidos_rows])
-        except:
-            pass
+            if enviado:
+                st.success(f"✅ WhatsApp enviado: {whatsapp_number}")
+            else:
+                st.error(f"❌ WhatsApp error ({whatsapp_number}): {r.text}")
+                # registra y sigue con la siguiente
+                try:
+                    hoy = datetime.date.today().strftime('%Y-%m-%d')
+                    df_existente = pd.read_excel(archivo_envios)
+                    nuevo_registro = pd.DataFrame([{
+                        "Fecha": hoy, "Número": f"'{whatsapp_number}",
+                        "Nombre": nombre, "Estado": estado + " | " + r.text[:500]
+                    }])
+                    pd.concat([df_existente, nuevo_registro], ignore_index=True).to_excel(archivo_envios, index=False)
+                except Exception:
+                    pass
+                continue
 
-        st.success("🎉 Proceso terminado.")
-        if os.path.exists(ARCHIVO_ENV):
-            with open(ARCHIVO_ENV, "rb") as f:
-                st.download_button("📥 Descargar envíos (Excel)", f, file_name="envios_hoy.xlsx")
-        if os.path.exists(ARCHIVO_FAIL):
-            with open(ARCHIVO_FAIL, "rb") as f:
-                st.download_button("⚠️ Descargar fallidos (Excel)", f, file_name="fallidos.xlsx")
+            # --------- Registrar envío en Excel ---------
+            try:
+                hoy = datetime.date.today().strftime('%Y-%m-%d')
+                df_existente = pd.read_excel(archivo_envios)
+                nuevo_registro = pd.DataFrame([{
+                    "Fecha": hoy,
+                    "Número": f"'{whatsapp_number}",
+                    "Nombre": nombre,
+                    "Estado": estado
+                }])
+                pd.concat([df_existente, nuevo_registro], ignore_index=True).to_excel(archivo_envios, index=False)
+                st.info(f"📊 Registrado en {archivo_envios}")
+            except Exception as e:
+                st.warning(f"⚠️ No se pudo registrar el envío: {e}")
+
+            # --------- Reflejar en Chatwoot (opcional) ---------
+            time.sleep(0.3)
+            msg_reflejo = (mensaje_real or "").strip()
+            if "[streamlit]" not in msg_reflejo:
+                msg_reflejo += " [streamlit]"
+
+            chatwoot_payload = {
+                "phone": whatsapp_number,
+                "name": nombre or "Cliente WhatsApp",
+                "content": msg_reflejo
+            }
+
+            chatwoot_reflejado = False
+            for intento in range(2):
+                try:
+                    # Usa tu server actual; si prefieres el viejo, cambia la URL
+                    cw = requests.post("https://srv904439.hstgr.cloud:10000/send-chatwoot-message", json=chatwoot_payload, timeout=15)
+                    if cw.status_code == 200:
+                        st.info(f"📥 Reflejado en Chatwoot: {whatsapp_number}")
+                        chatwoot_reflejado = True
+                        break
+                    else:
+                        st.warning(f"⚠️ Chatwoot error ({whatsapp_number}): {cw.text}")
+                except Exception:
+                    time.sleep(0.5)
+
+            if not chatwoot_reflejado:
+                try:
+                    with open(archivo_errores, "a") as f:
+                        f.write(f"{datetime.datetime.now()} - Error al reflejar {whatsapp_number}: {msg_reflejo}\n")
+                except Exception:
+                    pass
+
+# 📥 Botón para descargar el Excel de resultados
+if os.path.exists(archivo_envios):
+    try:
+        df_final = pd.read_excel(archivo_envios)
+        output = BytesIO()
+        df_final.to_excel(output, index=False)
+        st.download_button(
+            label="📥 Descargar Excel de envíos",
+            data=output.getvalue(),
+            file_name="envios_hoy.xlsx",
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+        )
+    except Exception as e:
+        st.warning(f"⚠️ No se pudo preparar archivo para descargar: {e}")

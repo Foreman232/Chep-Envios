@@ -5,77 +5,53 @@ import datetime
 import os
 import time
 from io import BytesIO
-import decimal
 
 st.set_page_config(page_title="📨 Envío Masivo WhatsApp", layout="centered")
 st.title("📨 Envío Masivo de WhatsApp con Plantillas")
 
+# Estado de ejecución
 if "ya_ejecuto" not in st.session_state:
     st.session_state["ya_ejecuto"] = False
 
+# API Key
 api_key = st.text_input("🔐 Ingresa tu API Key de 360dialog", type="password")
 
-# ---- Plantillas (texto humano solo para reflejo/log) ----
+# Plantillas
 plantillas = {
     "mensaje_entre_semana_24_hrs": lambda localidad: (
-        "Buen día, te saludamos de CHEP (Tarimas azules), es un gusto en saludarte.\n\n"
-        f"Te escribo para confirmar que el día de mañana tenemos programada la recolección de tarimas "
-        f"en tu localidad: {localidad}.\n\n"
-        "¿Me podrías indicar cuántas tarimas tienes para entregar? Así podremos coordinar la unidad."
+        f"Buen día, te saludamos de CHEP (Tarimas azules), es un gusto en saludarte. "
+        f"Te escribo para confirmar que el día de mañana tenemos programada la recolección "
+        f"de tarimas en tu localidad: {localidad}. ¿Me podrías indicar cuántas tarimas tienes "
+        f"para entregar? Así podremos coordinar la unidad."
     ),
     "recordatorio_24_hrs": lambda: (
-        "Buen día, estamos siguiendo tu solicitud, ¿Me ayudarías a confirmar si puedo validar la cantidad de tarimas que serán entregadas?"
+        "Buen día, estamos siguiendo tu solicitud, ¿Me ayudarías a confirmar si puedo validar "
+        "la cantidad de tarimas que serán entregadas?"
     )
 }
 
-# ---- Reglas de cuántos parámetros acepta cada plantilla ----
-TEMPLATE_PARAM_COUNTS = {
-    "mensaje_entre_semana_24_hrs": 1,
-    "recordatorio_24_hrs": 0,
-}
+# Normalizar número para Chatwoot
+def normalizar_numero(phone):
+    if phone.startswith("+52") and not phone.startswith("+521"):
+        return "+521" + phone[3:]
+    return phone
 
-LANG_CODE = "es_MX"
-
-# ================== Helpers ==================
-def _clean_num_component(x):
-    """Convierte 5.55e+09 / 5548917590.0 a '5548917590' (solo dígitos)."""
-    if x is None:
-        return ""
-    s = str(x).strip()
-    try:
-        if "e" in s.lower():
-            s = format(decimal.Decimal(s), "f")
-    except Exception:
-        pass
-    if s.endswith(".0"):
-        s = s[:-2]
-    return "".join(ch for ch in s if ch.isdigit())
-
-def normalizar_numero_e164(codigo_pais, telefono):
-    pais = _clean_num_component(codigo_pais)
-    fono = _clean_num_component(telefono)
-    if not pais or not fono:
-        return ""
-    e164 = f"+{pais}{fono}"
-    # MX -> +521
-    if e164.startswith("+52") and not e164.startswith("+521"):
-        e164 = "+521" + e164[3:]
-    return e164
-
-# ================== Archivos ==================
+# Archivos de registro
 archivo_envios = "envios_hoy.xlsx"
 archivo_errores = "errores_envio_chatwoot.txt"
+
 if not os.path.exists(archivo_envios):
     pd.DataFrame(columns=["Fecha", "Número", "Nombre", "Estado"]).to_excel(archivo_envios, index=False)
 
+# Subir archivo
 file = st.file_uploader("📁 Sube tu archivo Excel", type=["xlsx"])
 
 if api_key and file:
     df = pd.read_excel(file)
     df.columns = df.columns.str.strip()
     st.success(f"Archivo cargado con {len(df)} registros.")
-    columnas = df.columns.tolist()
 
+    columnas = df.columns.tolist()
     plantilla_col = st.selectbox("🧩 Columna plantilla:", columnas)
     telefono_col = st.selectbox("📱 Teléfono:", columnas)
     nombre_col = st.selectbox("📗 Nombre:", columnas)
@@ -90,101 +66,72 @@ if api_key and file:
             df["enviado"] = False
 
         for idx, row in df.iterrows():
-            if row.get("enviado") is True:
+            if row.get("enviado") == True:
                 continue
 
-            # --------- Número limpio y normalizado ---------
-            chatwoot_number = normalizar_numero_e164(row[pais_col], row[telefono_col])
-            if not chatwoot_number:
-                st.error(f"❌ Número inválido en fila {idx+1}")
-                continue
-            whatsapp_number = chatwoot_number  # e164 con '+'
-            to_number = whatsapp_number.replace("+", "")
-
-            nombre = (str(row[nombre_col]).strip()
-                      if pd.notna(row[nombre_col]) else "Cliente WhatsApp")
-            plantilla_nombre = (str(row[plantilla_col]).strip()
-                                if pd.notna(row[plantilla_col]) else "")
-
-            # --------- Valida plantilla / parámetros ---------
-            expected = TEMPLATE_PARAM_COUNTS.get(plantilla_nombre, None)
-            if expected is None:
-                st.error(f"❌ Plantilla desconocida '{plantilla_nombre}' en fila {idx+1}")
-                continue
+            raw_number = f"{str(row[pais_col])}{str(row[telefono_col])}".replace(" ", "").replace("-", "")
+            chatwoot_number = normalizar_numero(f"+{raw_number}")
+            whatsapp_number = chatwoot_number
+            nombre = str(row[nombre_col]).strip()
+            plantilla_nombre = str(row[plantilla_col]).strip()
 
             parameters = []
-            p1 = "" if param1_col == "(ninguno)" or pd.isna(row.get(param1_col)) else str(row[param1_col]).strip()
-            p2 = "" if param2_col == "(ninguno)" or pd.isna(row.get(param2_col)) else str(row[param2_col]).strip()
+            param1 = ""
+            param2 = ""
 
-            if expected >= 1 and p1:
-                parameters.append({"type": "text", "text": p1})
-            if expected >= 2 and p2:
-                parameters.append({"type": "text", "text": p2})
-
-            if expected > 0 and len(parameters) != expected:
-                st.error(f"❌ La plantilla '{plantilla_nombre}' espera {expected} parámetro(s) y llegó {len(parameters)} (fila {idx+1}).")
-                continue
-
-            # --------- Mensaje "humano" solo para reflejo/log ---------
+            # Mensaje según plantilla
             if plantilla_nombre == "recordatorio_24_hrs":
                 mensaje_real = plantillas["recordatorio_24_hrs"]()
-            elif plantilla_nombre == "mensaje_entre_semana_24_hrs":
-                # usa p1 como {{1}} (tú decides qué columna mapeas en la UI)
-                mensaje_real = plantillas["mensaje_entre_semana_24_hrs"](p1 or "")
+                param1 = nombre or "Cliente WhatsApp"
             else:
-                # genérico
-                mensaje_real = f"Plantilla {plantilla_nombre} enviada."
+                if param1_col != "(ninguno)":
+                    param1 = str(row[param1_col])
+                    parameters.append({"type": "text", "text": param1})
+                if param2_col != "(ninguno)":
+                    param2 = str(row[param2_col])
+                    parameters.append({"type": "text", "text": param2})
+                mensaje_real = plantillas.get(plantilla_nombre, lambda x: f"Mensaje enviado con parámetro: {x}")(param1)
 
-            # --------- Payload 360dialog ---------
+            # Payload para WhatsApp
             payload = {
                 "messaging_product": "whatsapp",
-                "to": to_number,                       # sin '+'
+                "to": whatsapp_number.replace("+", ""),
                 "type": "template",
                 "template": {
                     "name": plantilla_nombre,
-                    "language": {"code": "es_MX"}
+                    "language": {"code": "es_MX"},
+                    "components": []
                 }
             }
-            if expected > 0:
-                payload["template"]["components"] = [{"type": "body", "parameters": parameters}]
-            # si expected == 0, NO se agrega components (esto evita el 400)
+
+            if parameters:
+                payload["template"]["components"].append({
+                    "type": "body",
+                    "parameters": parameters
+                })
 
             headers = {
                 "Content-Type": "application/json",
                 "D360-API-KEY": api_key
             }
 
-            # --------- Envío con 1 reintento simple ---------
-            r = requests.post("https://waba-v2.360dialog.io/messages", headers=headers, json=payload)
-            if r.status_code == 429:
-                # respeta Retry-After si viene
-                ra = r.headers.get("Retry-After")
-                wait_s = int(ra) if ra and ra.isdigit() else 3
-                time.sleep(wait_s)
+            # Envío WhatsApp
+            for intento in range(2):
                 r = requests.post("https://waba-v2.360dialog.io/messages", headers=headers, json=payload)
+                if r.status_code == 200:
+                    break
 
-            enviado = 200 <= r.status_code < 300
-            df.at[idx, "enviado"] = enviado
+            enviado = r.status_code == 200
             estado = "✅ Enviado" if enviado else f"❌ Falló ({r.status_code})"
+            df.at[idx, "enviado"] = enviado
 
             if enviado:
                 st.success(f"✅ WhatsApp enviado: {whatsapp_number}")
             else:
                 st.error(f"❌ WhatsApp error ({whatsapp_number}): {r.text}")
-                # registra y sigue con la siguiente
-                try:
-                    hoy = datetime.date.today().strftime('%Y-%m-%d')
-                    df_existente = pd.read_excel(archivo_envios)
-                    nuevo_registro = pd.DataFrame([{
-                        "Fecha": hoy, "Número": f"'{whatsapp_number}",
-                        "Nombre": nombre, "Estado": estado + " | " + r.text[:500]
-                    }])
-                    pd.concat([df_existente, nuevo_registro], ignore_index=True).to_excel(archivo_envios, index=False)
-                except Exception:
-                    pass
                 continue
 
-            # --------- Registrar envío en Excel ---------
+            # Registrar envío en Excel
             try:
                 hoy = datetime.date.today().strftime('%Y-%m-%d')
                 df_existente = pd.read_excel(archivo_envios)
@@ -194,55 +141,52 @@ if api_key and file:
                     "Nombre": nombre,
                     "Estado": estado
                 }])
-                pd.concat([df_existente, nuevo_registro], ignore_index=True).to_excel(archivo_envios, index=False)
+                df_actualizado = pd.concat([df_existente, nuevo_registro], ignore_index=True)
+                df_actualizado.to_excel(archivo_envios, index=False)
                 st.info(f"📊 Registrado en {archivo_envios}")
             except Exception as e:
                 st.warning(f"⚠️ No se pudo registrar el envío: {e}")
 
-            # --------- Reflejar en Chatwoot (opcional) ---------
-            time.sleep(0.3)
-            msg_reflejo = (mensaje_real or "").strip()
-            if "[streamlit]" not in msg_reflejo:
-                msg_reflejo += " [streamlit]"
+            # Reflejar en Chatwoot
+            time.sleep(0.5)
+            mensaje_real = mensaje_real.strip()
+            if "[streamlit]" not in mensaje_real:
+                mensaje_real += " [streamlit]"
 
             chatwoot_payload = {
-                "phone": whatsapp_number,
+                "phone": chatwoot_number,
                 "name": nombre or "Cliente WhatsApp",
-                "content": msg_reflejo
+                "content": mensaje_real
             }
 
             chatwoot_reflejado = False
             for intento in range(2):
                 try:
-                    # Usa tu server actual; si prefieres el viejo, cambia la URL
-                    cw = requests.post("https://srv904439.hstgr.cloud:10000/send-chatwoot-message", json=chatwoot_payload, timeout=15)
+                    cw = requests.post("https://webhook-chatwoots.onrender.com/send-chatwoot-message", json=chatwoot_payload)
                     if cw.status_code == 200:
-                        st.info(f"📥 Reflejado en Chatwoot: {whatsapp_number}")
+                        st.info(f"📥 Reflejado en Chatwoot: {chatwoot_number}")
                         chatwoot_reflejado = True
                         break
                     else:
-                        st.warning(f"⚠️ Chatwoot error ({whatsapp_number}): {cw.text}")
+                        st.warning(f"⚠️ Chatwoot error ({chatwoot_number}): {cw.text}")
                 except Exception:
                     time.sleep(0.5)
 
             if not chatwoot_reflejado:
-                try:
-                    with open(archivo_errores, "a") as f:
-                        f.write(f"{datetime.datetime.now()} - Error al reflejar {whatsapp_number}: {msg_reflejo}\n")
-                except Exception:
-                    pass
+                with open(archivo_errores, "a") as f:
+                    f.write(f"{datetime.datetime.now()} - Error al reflejar {chatwoot_number}: {mensaje_real}\n")
 
-# 📥 Botón para descargar el Excel de resultados
-if os.path.exists(archivo_envios):
-    try:
-        df_final = pd.read_excel(archivo_envios)
-        output = BytesIO()
-        df_final.to_excel(output, index=False)
-        st.download_button(
-            label="📥 Descargar Excel de envíos",
-            data=output.getvalue(),
-            file_name="envios_hoy.xlsx",
-            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-        )
-    except Exception as e:
-        st.warning(f"⚠️ No se pudo preparar archivo para descargar: {e}")
+        # Botón para descargar Excel
+        if os.path.exists(archivo_envios):
+            try:
+                df_final = pd.read_excel(archivo_envios)
+                output = BytesIO()
+                df_final.to_excel(output, index=False)
+                st.download_button(
+                    label="📥 Descargar Excel de envíos",
+                    data=output.getvalue(),
+                    file_name="envios_hoy.xlsx",
+                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+                )
+            except Exception as e:
+                st.warning(f"⚠️ No se pudo preparar archivo para descargar: {e}")

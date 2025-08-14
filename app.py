@@ -1,320 +1,268 @@
-// index.js — Chatwoot <-> 360dialog <-> (Streamlit opcional)
-// - Refleja mensajes OUTGOING (from_me) con texto humano de plantilla
-// - Renderiza templates ({{1}}, {{2}}) a texto
-// - Crea conversación por contact_inbox_id y hace polling antes del 1er mensaje
-// - Dedupe con processedMessages
+import streamlit as st
+import pandas as pd
+import requests
+import os
+import time
+import datetime
+import math
+from io import BytesIO
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from requests.adapters import HTTPAdapter, Retry
+import hashlib
+import json
+import threading
 
-const express = require('express');
-const bodyParser = require('body-parser');
-const axios = require('axios');
-const https = require('https');
+# ===================== UI / CONFIG =====================
+st.set_page_config(page_title="📨 Envío Masivo WhatsApp (Optimizado)", layout="wide")
+st.title("📨 Envío Masivo de WhatsApp — Plantillas ⚡ Rápido y Estable")
 
-const app = express();
-app.use(bodyParser.json());
+colA, colB, colC = st.columns(3)
+with colA:
+    api_key = st.text_input("🔐 360dialog API Key", type="password")
+with colB:
+    max_workers = st.slider("🧵 Concurrencia (hilos)", min_value=2, max_value=32, value=16, step=2)
+with colC:
+    pause_on_429 = st.toggle("⏸️ Respetar Retry-After (429)", value=True)
 
-// ======== CONFIG (usa tus valores) ========
-const CHATWOOT_API_TOKEN = '5ZSLaX4VCt4T2Z1aHRyPmTFb';
-const CHATWOOT_ACCOUNT_ID = '1';
-const CHATWOOT_INBOX_ID = '1';
-const BASE_URL = 'https://srv904439.hstgr.cloud/api/v1/accounts';
+# Si quisieras reflejar desde Streamlit (opcional), usa tu webhook Node:
+# CW_URL = "https://srv904439.hstgr.cloud:10000/send-chatwoot-message"
+# reflect_chatwoot = st.toggle("📥 (Opcional) Reflejar en Chatwoot desde Streamlit", value=False)
 
-const D360_API_URL = 'https://waba-v2.360dialog.io/messages';
-const D360_API_KEY = '7Ll0YquMGVElHWxofGvhi5oFAK';
+ARCHIVO_ENV = "envios_hoy.xlsx"
+ARCHIVO_FAIL = "fallidos.xlsx"
+ARCHIVO_CHECK = "checkpoint_envios.json"
 
-const N8N_WEBHOOK_URL = 'https://n8n.srv876216.hstgr.cloud/webhook-test/confirmar-tarimas';
+# ===================== Helpers =====================
+def normalizar_numero(phone: str) -> str:
+    if not phone:
+        return phone
+    p = str(phone).strip().replace(" ", "").replace("-", "")
+    if not p.startswith("+"):
+        p = "+" + p
+    if p.startswith("+52") and not p.startswith("+521"):
+        p = "+521" + p[3:]
+    return p
 
-const processedMessages = new Set();
+def idempotency_key(row_dict: dict) -> str:
+    base = json.dumps(row_dict, sort_keys=True, ensure_ascii=False)
+    return hashlib.sha256(base.encode("utf-8")).hexdigest()[:16]
 
-// ======== Utils ========
-function normalizarNumero(numero) {
-  if (!numero || typeof numero !== 'string') return '';
-  let n = numero.trim().replace(/\s|-/g, '');
-  if (!n.startsWith('+')) n = `+${n}`;
-  if (n.startsWith('+52') && !n.startsWith('+521')) {
-    n = '+521' + n.slice(3);
-  }
-  return n;
-}
+def build_session_360(api_key: str):
+    s = requests.Session()
+    retries = Retry(
+        total=5,
+        backoff_factor=0.8,
+        status_forcelist=[429, 500, 502, 503, 504],
+        allowed_methods=["POST"]
+    )
+    adapter = HTTPAdapter(pool_connections=200, pool_maxsize=200, max_retries=retries)
+    s.mount("https://", adapter)
+    s.headers.update({"Content-Type": "application/json", "D360-API-KEY": api_key})
+    return s
 
-async function findOrCreateContact(phone, name = 'Cliente WhatsApp') {
-  const identifier = normalizarNumero(phone);
-  const payload = {
-    inbox_id: CHATWOOT_INBOX_ID,
-    name,
-    identifier,
-    phone_number: identifier
-  };
-  try {
-    const response = await axios.post(`${BASE_URL}/${CHATWOOT_ACCOUNT_ID}/contacts`, payload, {
-      headers: { api_access_token: CHATWOOT_API_TOKEN }
-    });
-    return response.data.payload;
-  } catch (err) {
-    // ya existe -> buscar
-    if (err.response?.data?.message?.includes('has already been taken')) {
-      const getResp = await axios.get(
-        `${BASE_URL}/${CHATWOOT_ACCOUNT_ID}/contacts/search?q=${encodeURIComponent(identifier)}`,
-        { headers: { api_access_token: CHATWOOT_API_TOKEN } }
-      );
-      return getResp.data.payload?.[0];
+def render_template_preview(name: str, p1: str = "", p2: str = "") -> str:
+    name = (name or "").strip()
+
+    if name == "mensaje_entre_semana_24_hrs":
+        # p1 = localidad
+        return (
+            "Buen día, te saludamos de CHEP (Tarimas azules), es un gusto en saludarte.\n\n"
+            f"Te escribo para confirmar que el día de mañana tenemos programada la recolección de tarimas "
+            f"en tu localidad: {p1}.\n\n"
+            "¿Me podrías indicar cuántas tarimas tienes para entregar? Así podremos coordinar la unidad."
+        )
+
+    if name == "recordatorio_24_hrs":
+        return (
+            "Buen día, estamos siguiendo tu solicitud, "
+            "¿Me ayudarías a confirmar si puedo validar la cantidad de tarimas que serán entregadas?"
+        )
+
+    # Genérico si aparece otra plantilla
+    cuerpo = "Plantilla enviada."
+    if p1 and p2:
+        cuerpo += f" Parámetros: {p1} | {p2}"
+    elif p1:
+        cuerpo += f" Parámetro: {p1}"
+    return cuerpo
+
+def send_360_template(session_360: requests.Session, to_number: str, template_name: str, params, pause_on_429=True):
+    payload = {
+        "messaging_product": "whatsapp",
+        "to": to_number.replace("+", ""),
+        "type": "template",
+        "template": {"name": template_name, "language": {"code": "es_MX"}, "components": []}
     }
-    console.error('❌ Contacto error:', err.response?.data || err.message);
-    return null;
-  }
-}
+    if params:
+        payload["template"]["components"].append({"type": "body", "parameters": params})
 
-async function getContactInboxInfo(contactId) {
-  try {
-    const res = await axios.get(`${BASE_URL}/${CHATWOOT_ACCOUNT_ID}/contacts/${contactId}`, {
-      headers: { api_access_token: CHATWOOT_API_TOKEN }
-    });
-    const ci = res.data.payload?.contact_inboxes?.[0];
-    if (!ci) return null;
-    return { contact_inbox_id: ci.id, source_id: ci.source_id };
-  } catch (err) {
-    console.error('❌ No se pudo obtener contact_inbox_id:', err.response?.data || err.message);
-    return null;
-  }
-}
+    resp = session_360.post("https://waba-v2.360dialog.io/messages", json=payload, timeout=25)
+    if pause_on_429 and resp.status_code == 429:
+        ra = resp.headers.get("Retry-After")
+        wait_s = int(ra) if ra and ra.isdigit() else 3
+        time.sleep(wait_s)
+        resp = session_360.post("https://waba-v2.360dialog.io/messages", json=payload, timeout=25)
 
-async function getOrCreateConversationByInbox(contact_inbox_id) {
-  try {
-    // Crear conversación directamente con contact_inbox_id (Chatwoot recomienda)
-    const newConv = await axios.post(
-      `${BASE_URL}/${CHATWOOT_ACCOUNT_ID}/conversations`,
-      { contact_inbox_id },
-      { headers: { api_access_token: CHATWOOT_API_TOKEN } }
-    );
-    return newConv.data.id;
-  } catch (err) {
-    // si ya hay conversación abierta, Chatwoot a veces devuelve error; intenta listar
-    try {
-      const convs = await axios.get(
-        `${BASE_URL}/${CHATWOOT_ACCOUNT_ID}/conversations`,
-        { headers: { api_access_token: CHATWOOT_API_TOKEN } }
-      );
-      const found = (convs.data?.payload || []).find(c => c.meta?.sender?.contact_inbox_id === contact_inbox_id);
-      if (found) return found.id;
-    } catch (e) {}
-    console.error(':x: Error creando/obteniendo conversación:', err.response?.data || err.message);
-    return null;
-  }
-}
+    ok = 200 <= resp.status_code < 300
+    return ok, resp.text, resp.status_code
 
-async function waitConversationReady(conversationId, attempts = 8, delayMs = 1000) {
-  for (let i = 0; i < attempts; i++) {
-    try {
-      const check = await axios.get(
-        `${BASE_URL}/${CHATWOOT_ACCOUNT_ID}/conversations/${conversationId}`,
-        { headers: { api_access_token: CHATWOOT_API_TOKEN } }
-      );
-      if (check.status === 200) return true;
-    } catch (e) {}
-    await new Promise(r => setTimeout(r, delayMs));
-  }
-  return false;
-}
+def guardar_checkpoint(pendientes, enviados, fallidos):
+    data = {"ts": time.time(), "pendientes": pendientes, "enviados": enviados, "fallidos": fallidos}
+    with open(ARCHIVO_CHECK, "w", encoding="utf-8") as f:
+        json.dump(data, f, ensure_ascii=False)
 
-async function sendToChatwoot(conversationId, type, content, outgoing = false) {
-  const payload = {
-    message_type: outgoing ? 'outgoing' : 'incoming',
-    private: false
-  };
-  if (['image', 'document', 'audio', 'video'].includes(type)) {
-    payload.attachments = [{ file_type: type, file_url: content }];
-  } else {
-    payload.content = content;
-  }
-  await axios.post(
-    `${BASE_URL}/${CHATWOOT_ACCOUNT_ID}/conversations/${conversationId}/messages`,
-    payload,
-    { headers: { api_access_token: CHATWOOT_API_TOKEN } }
-  );
-}
+def cargar_checkpoint():
+    if not os.path.exists(ARCHIVO_CHECK):
+        return None
+    try:
+        with open(ARCHIVO_CHECK, "r", encoding="utf-8") as f:
+            return json.load(f)
+    except:
+        return None
 
-// ======== Render de plantillas a texto humano ========
-function renderTemplateToText(name, parameters = []) {
-  const p1 = parameters?.[0]?.text || parameters?.[0]?.payload || '';
-  const p2 = parameters?.[1]?.text || parameters?.[1]?.payload || '';
+def registrar_excel(numero, nombre, estado):
+    try:
+        hoy = datetime.date.today().strftime('%Y-%m-%d')
+        if not os.path.exists(ARCHIVO_ENV):
+            pd.DataFrame(columns=["Fecha", "Número", "Nombre", "Estado"]).to_excel(ARCHIVO_ENV, index=False)
+        df_exist = pd.read_excel(ARCHIVO_ENV)
+        nuevo = pd.DataFrame([{"Fecha": hoy, "Número": f"'{numero}", "Nombre": nombre, "Estado": estado}])
+        pd.concat([df_exist, nuevo], ignore_index=True).to_excel(ARCHIVO_ENV, index=False)
+    except:
+        pass
 
-  if (name === 'mensaje_entre_semana_24_hrs') {
-    return `Buen día, te saludamos de CHEP (Tarimas azules), es un gusto en saludarte.
+# (Opcional) reflejo directo a Chatwoot desde Streamlit — desactivado por defecto
+# def reflect_to_chatwoot(phone: str, name: str, content: str):
+#     try:
+#         payload = {"phone": phone, "name": name or "Cliente WhatsApp", "content": content}
+#         r = requests.post(CW_URL, json=payload, timeout=15)
+#         return 200 <= r.status_code < 300, r.text, r.status_code
+#     except Exception as e:
+#         return False, str(e), -1
 
-Te escribo para confirmar que el día de mañana tenemos programada la recolección de tarimas en tu localidad: ${p1}.
+# ===================== Carga de archivo =====================
+file = st.file_uploader("📁 Sube tu Excel (con columnas de país, teléfono, plantilla y parámetros)", type=["xlsx"])
 
-¿Me podrías indicar cuántas tarimas tienes para entregar? Así podremos coordinar la unidad.`;
-  }
+if file and api_key:
+    df = pd.read_excel(file)
+    df.columns = df.columns.str.strip()
+    st.success(f"Archivo cargado con {len(df)} registros.")
 
-  if (name === 'recordatorio_24_hrs') {
-    return 'Buen día, estamos siguiendo tu solicitud, ¿Me ayudarías a confirmar si puedo validar la cantidad de tarimas que serán entregadas?';
-  }
+    cols = df.columns.tolist()
+    c1, c2, c3, c4 = st.columns(4)
+    with c1: plantilla_col = st.selectbox("🧩 Columna plantilla", cols)
+    with c2: tel_col = st.selectbox("📱 Teléfono", cols)
+    with c3: nombre_col = st.selectbox("📗 Nombre", cols)
+    with c4: pais_col = st.selectbox("🌎 Código país", cols)
 
-  // Genérico por si llega otra plantilla
-  const extra =
-    p1 && p2 ? ` Parámetros: ${p1} | ${p2}` :
-    p1 ? ` Parámetro: ${p1}` : '';
-  return `Plantilla ${name} enviada.${extra}`;
-}
+    c5, c6 = st.columns(2)
+    with c5: p1_col = st.selectbox("🔢 Parámetro {{1}}", ["(ninguno)"] + cols)
+    with c6: p2_col = st.selectbox("🔢 Parámetro {{2}}", ["(ninguno)"] + cols)
 
-// ======== WEBHOOK 360dialog ========
-app.post('/webhook', async (req, res) => {
-  try {
-    const entry = req.body.entry?.[0];
-    const changes = entry?.changes?.[0]?.value;
-    const rawPhone = `+${changes?.contacts?.[0]?.wa_id}`;
-    const phone = normalizarNumero(rawPhone);
-    const name = changes?.contacts?.[0]?.profile?.name;
-    const msg = changes?.messages?.[0];
+    if st.button("🚀 Enviar (rápido y tolerante a fallas)"):
+        start_time = time.time()
+        session_360 = build_session_360(api_key)
 
-    if (!phone || !msg) return res.sendStatus(200);
+        # Estado compartido
+        lock = threading.Lock()
+        stats = {"enviados_ok": 0, "fallidos_cnt": 0, "completed": 0}
 
-    const messageId = msg.id;
-    if (processedMessages.has(messageId)) return res.sendStatus(200);
-    processedMessages.add(messageId);
+        total = len(df)
+        trabajos = []
+        fallidos_rows = []
+        enviados_set = set()
 
-    // Crear/obtener contacto + inbox + conversación
-    const contact = await findOrCreateContact(phone, name);
-    if (!contact?.id) return res.sendStatus(500);
+        # Preparar trabajos
+        for _, row in df.iterrows():
+            tel = normalizar_numero(f"+{str(row[pais_col])}{str(row[tel_col])}")
+            nombre = str(row[nombre_col]).strip() if pd.notna(row[nombre_col]) else "Cliente WhatsApp"
+            plantilla = str(row[plantilla_col]).strip()
 
-    const inboxInfo = await getContactInboxInfo(contact.id);
-    if (!inboxInfo?.contact_inbox_id) return res.sendStatus(500);
+            params = []
+            p1 = "" if p1_col == "(ninguno)" or pd.isna(row.get(p1_col)) else str(row[p1_col])
+            p2 = "" if p2_col == "(ninguno)" or pd.isna(row.get(p2_col)) else str(row[p2_col])
+            if p1_col != "(ninguno)": params.append({"type": "text", "text": p1})
+            if p2_col != "(ninguno)": params.append({"type": "text", "text": p2})
 
-    let conversationId = await getOrCreateConversationByInbox(inboxInfo.contact_inbox_id);
-    if (!conversationId) return res.sendStatus(500);
+            # Texto humano (tu Node ya lo renderiza desde webhook; esto es solo por si quieres preview)
+            mensaje_humano = render_template_preview(plantilla, p1, p2)
 
-    await waitConversationReady(conversationId, 8, 1000);
+            job = {"tel": tel, "nombre": nombre, "plantilla": plantilla,
+                   "params": params, "p1": p1, "p2": p2, "mensaje": mensaje_humano}
+            job["key"] = idempotency_key({"to": tel, "tpl": plantilla, "p1": p1, "p2": p2})
+            trabajos.append(job)
 
-    // ----- OUTGOING (from_me) -> que aparezca directo en Chatwoot -----
-    if (msg.from_me) {
-      if (msg.type === 'template') {
-        const texto = renderTemplateToText(
-          msg.template?.name,
-          msg.template?.components?.[0]?.parameters || []
-        );
-        await sendToChatwoot(conversationId, 'text', texto, true);
-      } else if (msg.type === 'text') {
-        await sendToChatwoot(conversationId, 'text', msg.text?.body || '', true);
-      } else if (['image', 'document', 'audio', 'video'].includes(msg.type)) {
-        const url = msg[msg.type]?.link || '[media]';
-        await sendToChatwoot(conversationId, msg.type, url, true);
-      } else {
-        await sendToChatwoot(conversationId, 'text', '[Mensaje enviado]', true);
-      }
-      return res.sendStatus(200);
-    }
+        # Reanudar si hay checkpoint
+        cp = cargar_checkpoint()
+        if cp and "enviados" in cp:
+            ya = set(cp["enviados"])
+            trabajos = [t for t in trabajos if t["key"] not in ya]
+            enviados_set |= ya
+            st.info(f"🔁 Reanudando: {len(ya)} ya enviados, {len(trabajos)} pendientes.")
 
-    // ----- INCOMING -----
-    const type = msg.type;
-    if (type === 'text') {
-      await sendToChatwoot(conversationId, 'text', msg.text?.body || '');
-    } else if (['image', 'document', 'audio', 'video'].includes(type)) {
-      const url = msg[type]?.link || msg[type]?.body || msg[type]?.caption || '[media]';
-      await sendToChatwoot(conversationId, type, url);
-    } else if (type === 'location') {
-      const loc = msg.location;
-      const locStr = `📍 Ubicación: https://maps.google.com/?q=${loc.latitude},${loc.longitude}`;
-      await sendToChatwoot(conversationId, 'text', locStr);
-    } else if (type === 'template') {
-      const texto = renderTemplateToText(
-        msg.template?.name,
-        msg.template?.components?.[0]?.parameters || []
-      );
-      await sendToChatwoot(conversationId, 'text', texto);
-    } else {
-      await sendToChatwoot(conversationId, 'text', '[Contenido no soportado]');
-    }
+        pendientes_keys = [t["key"] for t in trabajos]
 
-    // Reenvío a n8n (opcional)
-    try {
-      await axios.post(
-        N8N_WEBHOOK_URL,
-        { phone, name, type, content: msg[type]?.body || msg[type]?.caption || msg[type]?.link || '' },
-        { httpsAgent: new https.Agent({ rejectUnauthorized: false }) }
-      );
-    } catch (n8nErr) {
-      console.warn('⚠️ n8n:', n8nErr.message);
-    }
+        progress = st.progress(0.0)
+        status = st.empty()
 
-    res.sendStatus(200);
-  } catch (err) {
-    console.error(':x: Webhook error:', err.response?.data || err.message);
-    res.sendStatus(500);
-  }
-});
+        def tarea(job):
+            tel = job["tel"]; nombre = job["nombre"]
+            plantilla = job["plantilla"]; params = job["params"]
+            key = job["key"]
 
-// ======== CHATWOOT -> 360dialog (enviar desde bandeja) ========
-app.post('/outbound', async (req, res) => {
-  const msg = req.body;
-  if (!msg?.message_type || msg.message_type !== 'outgoing') {
-    return res.sendStatus(200);
-  }
+            ok, txt, code = send_360_template(session_360, tel, plantilla, params, pause_on_429)
+            if ok:
+                registrar_excel(tel, nombre, "✅ Enviado")
+                with lock:
+                    stats["enviados_ok"] += 1
+                    enviados_set.add(key)
+            else:
+                with lock:
+                    stats["fallidos_cnt"] += 1
+                    fallidos_rows.append({"Número": tel, "Nombre": nombre, "Plantilla": plantilla, "Respuesta": txt, "Code": code})
+                registrar_excel(tel, nombre, f"❌ Falló ({code})")
+                return
 
-  const messageId = msg.id;
-  if (processedMessages.has(messageId)) return res.sendStatus(200);
-  processedMessages.add(messageId);
+            # (Opcional) reflejo desde Streamlit — normalmente NO necesario:
+            # if reflect_chatwoot:
+            #     ok_cw, _, _ = reflect_to_chatwoot(tel, nombre, job["mensaje"])
+            #     # No bloqueamos el envío si falla el reflejo
 
-  const rawNumber = msg.conversation?.meta?.sender?.phone_number?.replace('+', '');
-  const number = normalizarNumero(`+${rawNumber}`).replace('+', '');
-  const content = msg.content;
+        checkpoint_every = max(20, math.ceil(total * 0.02))
+        with ThreadPoolExecutor(max_workers=max_workers) as ex:
+            futures = [ex.submit(tarea, job) for job in trabajos]
+            for fut in as_completed(futures):
+                with lock:
+                    stats["completed"] += 1
+                    completed = stats["completed"]
 
-  if (!number || !content) return res.sendStatus(200);
+                if completed % checkpoint_every == 0:
+                    try:
+                        guardar_checkpoint(pendientes_keys, list(enviados_set), [f["Número"] for f in fallidos_rows])
+                    except:
+                        pass
 
-  try {
-    await axios.post(D360_API_URL, {
-      messaging_product: 'whatsapp',
-      to: number,
-      type: 'text',
-      text: { body: content }
-    }, {
-      headers: { 'D360-API-KEY': D360_API_KEY, 'Content-Type': 'application/json' }
-    });
-    res.sendStatus(200);
-  } catch (err) {
-    console.error(':x: Error enviando a WhatsApp:', err.response?.data || err.message);
-    res.sendStatus(500);
-  }
-});
+                pct = (len(enviados_set)) / total
+                elapsed = max(1, time.time() - start_time)
+                tasa = len(enviados_set) / elapsed  # msgs/seg reales
+                progress.progress(min(1.0, pct))
+                status.markdown(
+                    f"**Progreso:** {pct:.0%} | ⏱️ {elapsed:.0f}s | ⚡ {tasa:.2f} msg/s  \n"
+                    f"✅ Enviados: {stats['enviados_ok']} | ❌ Fallidos: {stats['fallidos_cnt']}"
+                )
 
-// ======== (Opcional) Reflejo manual desde Streamlit ========
-app.post('/send-chatwoot-message', async (req, res) => {
-  try {
-    const { phone, name, content } = req.body;
-    const normalizedPhone = normalizarNumero((phone || '').trim());
+        if fallidos_rows:
+            pd.DataFrame(fallidos_rows).to_excel(ARCHIVO_FAIL, index=False)
 
-    const contact = await findOrCreateContact(normalizedPhone, name || 'Cliente WhatsApp');
-    if (!contact?.id) return res.status(500).send('Error al crear o recuperar el contacto');
+        try:
+            guardar_checkpoint(pendientes_keys, list(enviados_set), [f["Número"] for f in fallidos_rows])
+        except:
+            pass
 
-    const inboxInfo = await getContactInboxInfo(contact.id);
-    if (!inboxInfo?.contact_inbox_id) return res.status(500).send('No se pudo obtener contact_inbox_id');
-
-    let conversationId = await getOrCreateConversationByInbox(inboxInfo.contact_inbox_id);
-    if (!conversationId) return res.status(500).send('No se pudo crear conversación');
-
-    await waitConversationReady(conversationId, 8, 1000);
-
-    const msg = (content || '').trim();
-    await sendToChatwoot(conversationId, 'text', msg, true);
-
-    try {
-      // Visibilidad en inbox
-      await axios.put(
-        `${BASE_URL}/${CHATWOOT_ACCOUNT_ID}/conversations/${conversationId}`,
-        { status: 'open' },
-        { headers: { api_access_token: CHATWOOT_API_TOKEN } }
-      );
-      await axios.post(
-        `${BASE_URL}/${CHATWOOT_ACCOUNT_ID}/conversations/${conversationId}/assignments`,
-        { assignee_id: null },
-        { headers: { api_access_token: CHATWOOT_API_TOKEN } }
-      );
-    } catch (e) {}
-
-    return res.sendStatus(200);
-  } catch (err) {
-    console.error(':x: Error general en /send-chatwoot-message:', err.message);
-    res.status(500).send('Error interno al reflejar mensaje');
-  }
-});
-
-const PORT = process.env.PORT || 10000;
-app.listen(PORT, () => console.log(`🚀 Webhook corriendo en puerto ${PORT}`));
+        st.success("🎉 Proceso terminado.")
+        if os.path.exists(ARCHIVO_ENV):
+            with open(ARCHIVO_ENV, "rb") as f:
+                st.download_button("📥 Descargar envíos (Excel)", f, file_name="envios_hoy.xlsx")
+        if os.path.exists(ARCHIVO_FAIL):
+            with open(ARCHIVO_FAIL, "rb") as f:
+                st.download_button("⚠️ Descargar fallidos (Excel)", f, file_name="fallidos.xlsx")

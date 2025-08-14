@@ -13,7 +13,7 @@ import json
 import threading
 
 # ===================== UI / CONFIG =====================
-st.set_page_config(page_title="📨 Envío Masivo WhatsApp (Optimizado)", layout="wide")
+st.set_page_config(page_title="📨 Envío Masivo de WhatsApp — Plantillas ⚡", layout="wide")
 st.title("📨 Envío Masivo de WhatsApp — Plantillas ⚡ Rápido y Estable")
 
 colA, colB, colC = st.columns(3)
@@ -24,13 +24,18 @@ with colB:
 with colC:
     pause_on_429 = st.toggle("⏸️ Respetar Retry-After (429)", value=True)
 
-# Si quisieras reflejar desde Streamlit (opcional), usa tu webhook Node:
-# CW_URL = "https://srv904439.hstgr.cloud:10000/send-chatwoot-message"
-# reflect_chatwoot = st.toggle("📥 (Opcional) Reflejar en Chatwoot desde Streamlit", value=False)
-
 ARCHIVO_ENV = "envios_hoy.xlsx"
 ARCHIVO_FAIL = "fallidos.xlsx"
 ARCHIVO_CHECK = "checkpoint_envios.json"
+
+# ===================== Reglas por plantilla (AQUÍ defines cuántos params acepta cada una) =====================
+TEMPLATE_PARAM_COUNTS = {
+    "mensaje_entre_semana_24_hrs": 1,   # {{1}} = localidad
+    "recordatorio_24_hrs": 0,           # no acepta parámetros
+    # agrega aquí más plantillas: "nombre": número_de_parámetros
+}
+
+LANG_CODE = "es_MX"  # ajusta si tu plantilla está aprobada en otro idioma
 
 # ===================== Helpers =====================
 def normalizar_numero(phone: str) -> str:
@@ -91,9 +96,9 @@ def send_360_template(session_360: requests.Session, to_number: str, template_na
         "messaging_product": "whatsapp",
         "to": to_number.replace("+", ""),
         "type": "template",
-        "template": {"name": template_name, "language": {"code": "es_MX"}, "components": []}
+        "template": {"name": template_name, "language": {"code": LANG_CODE}, "components": []}
     }
-    if params:
+    if params:  # solo si hay params válidos
         payload["template"]["components"].append({"type": "body", "parameters": params})
 
     resp = session_360.post("https://waba-v2.360dialog.io/messages", json=payload, timeout=25)
@@ -131,14 +136,8 @@ def registrar_excel(numero, nombre, estado):
     except:
         pass
 
-# (Opcional) reflejo directo a Chatwoot desde Streamlit — desactivado por defecto
-# def reflect_to_chatwoot(phone: str, name: str, content: str):
-#     try:
-#         payload = {"phone": phone, "name": name or "Cliente WhatsApp", "content": content}
-#         r = requests.post(CW_URL, json=payload, timeout=15)
-#         return 200 <= r.status_code < 300, r.text, r.status_code
-#     except Exception as e:
-#         return False, str(e), -1
+def expected_params_for_template(template_name: str) -> int:
+    return TEMPLATE_PARAM_COUNTS.get((template_name or "").strip(), 0)
 
 # ===================== Carga de archivo =====================
 file = st.file_uploader("📁 Sube tu Excel (con columnas de país, teléfono, plantilla y parámetros)", type=["xlsx"])
@@ -178,13 +177,35 @@ if file and api_key:
             nombre = str(row[nombre_col]).strip() if pd.notna(row[nombre_col]) else "Cliente WhatsApp"
             plantilla = str(row[plantilla_col]).strip()
 
-            params = []
-            p1 = "" if p1_col == "(ninguno)" or pd.isna(row.get(p1_col)) else str(row[p1_col])
-            p2 = "" if p2_col == "(ninguno)" or pd.isna(row.get(p2_col)) else str(row[p2_col])
-            if p1_col != "(ninguno)": params.append({"type": "text", "text": p1})
-            if p2_col != "(ninguno)": params.append({"type": "text", "text": p2})
+            # Lee p1/p2 desde columnas, pero NO los mandes aún
+            p1_raw = "" if p1_col == "(ninguno)" or pd.isna(row.get(p1_col)) else str(row[p1_col]).strip()
+            p2_raw = "" if p2_col == "(ninguno)" or pd.isna(row.get(p2_col)) else str(row[p2_col]).strip()
 
-            # Texto humano (tu Node ya lo renderiza desde webhook; esto es solo por si quieres preview)
+            # Cuántos parámetros acepta esta plantilla
+            needed = expected_params_for_template(plantilla)
+
+            # Construye params solo hasta 'needed', ignora extras (compatibilidad con tu app original)
+            params = []
+            if needed >= 1 and p1_raw:
+                params.append({"type": "text", "text": p1_raw})
+            if needed >= 2 and p2_raw:
+                params.append({"type": "text", "text": p2_raw})
+
+            # Validación por fila
+            present = len(params)
+            if present != needed:
+                # Si falta alguno requerido -> marcar fallido con mensaje claro
+                fallidos_rows.append({
+                    "Número": tel, "Nombre": nombre, "Plantilla": plantilla,
+                    "Respuesta": f"La plantilla '{plantilla}' espera {needed} parámetro(s) y se recibieron {present}.",
+                    "Code": 0
+                })
+                registrar_excel(tel, nombre, f"❌ Configuración inválida: espera {needed}, llegó {present}")
+                continue
+
+            # Texto humano para preview (tu Node ya lo renderiza en Chatwoot)
+            p1 = p1_raw if needed >= 1 else ""
+            p2 = p2_raw if needed >= 2 else ""
             mensaje_humano = render_template_preview(plantilla, p1, p2)
 
             job = {"tel": tel, "nombre": nombre, "plantilla": plantilla,
@@ -221,12 +242,6 @@ if file and api_key:
                     stats["fallidos_cnt"] += 1
                     fallidos_rows.append({"Número": tel, "Nombre": nombre, "Plantilla": plantilla, "Respuesta": txt, "Code": code})
                 registrar_excel(tel, nombre, f"❌ Falló ({code})")
-                return
-
-            # (Opcional) reflejo desde Streamlit — normalmente NO necesario:
-            # if reflect_chatwoot:
-            #     ok_cw, _, _ = reflect_to_chatwoot(tel, nombre, job["mensaje"])
-            #     # No bloqueamos el envío si falla el reflejo
 
         checkpoint_every = max(20, math.ceil(total * 0.02))
         with ThreadPoolExecutor(max_workers=max_workers) as ex:
@@ -242,9 +257,9 @@ if file and api_key:
                     except:
                         pass
 
-                pct = (len(enviados_set)) / total
+                pct = (len(enviados_set)) / total if total else 1.0
                 elapsed = max(1, time.time() - start_time)
-                tasa = len(enviados_set) / elapsed  # msgs/seg reales
+                tasa = (len(enviados_set) / elapsed) if elapsed else 0
                 progress.progress(min(1.0, pct))
                 status.markdown(
                     f"**Progreso:** {pct:.0%} | ⏱️ {elapsed:.0f}s | ⚡ {tasa:.2f} msg/s  \n"

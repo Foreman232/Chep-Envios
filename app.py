@@ -86,7 +86,7 @@ def enviar_mensaje(row, api_key, plantilla_col, telefono_col, nombre_col, pais_c
             "D360-API-KEY": api_key
         }
 
-        r = requests.post("https://waba-v2.360dialog.io/messages", headers=headers, json=payload, timeout=15)
+        r = requests.post("https://waba-v2.360dialog.io/messages", headers=headers, json=payload, timeout=20)
         enviado = r.status_code == 200
         estado = "✅ Enviado" if enviado else f"❌ Falló ({r.status_code})"
 
@@ -102,7 +102,7 @@ def enviar_mensaje(row, api_key, plantilla_col, telefono_col, nombre_col, pais_c
         df_actualizado = pd.concat([df_existente, nuevo_registro], ignore_index=True)
         df_actualizado.to_excel(archivo_envios, index=False)
 
-        # Reflejar en Chatwoot (con 3 reintentos)
+        # Reflejar en Chatwoot (con reintentos + ACK duro)
         chatwoot_payload = {
             "phone": chatwoot_number,
             "name": nombre or "Cliente WhatsApp",
@@ -110,13 +110,24 @@ def enviar_mensaje(row, api_key, plantilla_col, telefono_col, nombre_col, pais_c
         }
         for intento in range(3):
             try:
-                cw = requests.post("https://webhook-chatwoots.onrender.com/send-chatwoot-message", json=chatwoot_payload, timeout=15)
-                if cw.status_code == 200:
-                    break
-                else:
-                    time.sleep(1)  # esperar un poco y reintentar
+                cw = requests.post(
+                    "https://webhook-chatwoots.onrender.com/send-chatwoot-message",
+                    json=chatwoot_payload,
+                    timeout=20
+                )
+                if cw.ok:
+                    try:
+                        data = cw.json()
+                        if data.get("ok") and data.get("messageId"):
+                            break  # ACK duro: solo salir si Chatwoot devolvió messageId
+                    except Exception:
+                        pass
+                time.sleep(0.8)  # pequeño backoff antes de reintentar
             except Exception:
-                time.sleep(1)
+                time.sleep(0.8)
+
+        # Pausa corta para evitar condiciones de carrera en la creación/primer mensaje
+        time.sleep(0.35)
 
         return whatsapp_number, estado
 
@@ -143,7 +154,8 @@ if api_key and file:
         st.session_state["ya_ejecuto"] = True
         resultados = []
 
-        with ThreadPoolExecutor(max_workers=10) as executor:  # hasta 10 en paralelo
+        # PATCH: envío serial (más seguro) — si necesitas velocidad, súbelo a 3
+        with ThreadPoolExecutor(max_workers=1) as executor:  # antes: 10
             futures = [
                 executor.submit(
                     enviar_mensaje,
@@ -176,6 +188,3 @@ if os.path.exists(archivo_envios):
         )
     except Exception as e:
         st.warning(f"⚠️ No se pudo preparar archivo para descargar: {e}")
-
-
-

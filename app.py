@@ -1,252 +1,171 @@
-// index.js – Webhook robusto con idempotencia + reintentos + ACK duro
+import streamlit as st
+import pandas as pd
+import requests
+import datetime
+import os
+from io import BytesIO
+from concurrent.futures import ThreadPoolExecutor, as_completed
+import time
+import hashlib
 
-const express = require('express');
-const bodyParser = require('body-parser');
-const axios = require('axios');
-const https = require('https');
-const app = express();
-app.use(bodyParser.json());
+st.set_page_config(page_title="📨 Envío Masivo WhatsApp", layout="centered")
+st.title("📨 Envío Masivo de WhatsApp con Plantillas")
 
-// ============== CONFIG AJUSTABLE ==============
-const CHATWOOT_API_TOKEN   = '5ZSLaX4VCt4T2Z1aHRyPmTFb';
-const CHATWOOT_ACCOUNT_ID  = '1';
-const CHATWOOT_INBOX_ID    = '1';
-const BASE_URL             = 'https://srv904439.hstgr.cloud/api/v1/accounts';
+if "ya_ejecuto" not in st.session_state:
+    st.session_state["ya_ejecuto"] = False
 
-const D360_API_URL         = 'https://waba-v2.360dialog.io/messages';
-const D360_API_KEY         = '7Ll0YquMGVElHWxofGvhi5oFAK';
+# ========= CONFIG =========
+# Si tienes NGINX/subdominio, cámbialo por https://webhook.chep-tarimas.store/send-chatwoot-message
+REFLECT_URL = "https://srv904439.hstgr.cloud:10000/send-chatwoot-message"
+WHATSAPP_API_URL = "https://waba-v2.360dialog.io/messages"
 
-const N8N_WEBHOOK_URL      = 'https://n8n.srv876216.hstgr.cloud/webhook-test/confirmar-tarimas';
+api_key = st.text_input("🔐 Ingresa tu API Key de 360dialog", type="password")
 
-const PORT = process.env.PORT || 10000;
+plantillas = {
+    "mensaje_entre_semana_24_hrs": lambda localidad: f"""Buen día, te saludamos de CHEP (Tarimas azules), es un gusto en saludarte.
 
-// ============== HELPERS ==============
-function normalizarNumero(numero) {
-  if (!numero || typeof numero !== 'string') return '';
-  if (numero.startsWith('+52') && !numero.startsWith('+521')) return '+521' + numero.slice(3);
-  return numero;
+Te escribo para confirmar que el día de mañana tenemos programada la recolección de tarimas en tu localidad: {localidad}.
+
+¿Me podrías indicar cuántas tarimas tienes para entregar? Así podremos coordinar la unidad.""",
+    "recordatorio_24_hrs": lambda: "Buen día, estamos siguiendo tu solicitud, ¿Me ayudarías a confirmar si puedo validar la cantidad de tarimas que serán entregadas?"
 }
 
-function makeExpiringSet(ms = 15 * 60 * 1000) {
-  const map = new Map();
-  const has = k => {
-    const t = map.get(k);
-    if (!t) return false;
-    if (Date.now() > t) { map.delete(k); return false; }
-    return true;
-  };
-  const add = k => map.set(k, Date.now() + ms);
-  return { has, add };
-}
+def normalizar_numero(phone: str) -> str:
+    if phone.startswith("+52") and not phone.startswith("+521"):
+        return "+521" + phone[3:]
+    return phone
 
-const processedInboundIds   = makeExpiringSet(); // mensajes entrantes (360dialog)
-const processedOutboundIds  = makeExpiringSet(); // mensajes salientes (CW -> WA)
-const processedClientMsgIds = makeExpiringSet(); // idempotencia desde Streamlit
+def gen_client_message_id(phone: str, content: str) -> str:
+    base = f"{phone}|{content}|{datetime.datetime.utcnow().isoformat(timespec='seconds')}"
+    return hashlib.sha1(base.encode("utf-8")).hexdigest()
 
-const cwHeaders = { api_access_token: CHATWOOT_API_TOKEN };
+def post_whatsapp(api_key: str, payload: dict) -> requests.Response:
+    headers = {"Content-Type": "application/json", "D360-API-KEY": api_key}
+    return requests.post(WHATSAPP_API_URL, headers=headers, json=payload, timeout=20)
 
-async function findOrCreateContact(phone, name = 'Cliente WhatsApp') {
-  const identifier = normalizarNumero(phone);
-  const payload = { inbox_id: CHATWOOT_INBOX_ID, name, identifier, phone_number: identifier };
-  try {
-    const { data } = await axios.post(`${BASE_URL}/${CHATWOOT_ACCOUNT_ID}/contacts`, payload, { headers: cwHeaders });
-    return data.payload;
-  } catch (err) {
-    if (err.response?.data?.message?.includes('has already been taken')) {
-      const q = encodeURIComponent(identifier);
-      const { data } = await axios.get(`${BASE_URL}/${CHATWOOT_ACCOUNT_ID}/contacts/search?q=${q}`, { headers: cwHeaders });
-      return data.payload?.[0];
-    }
-    console.error('❌ Contacto error:', err.response?.data || err.message);
-    return null;
-  }
-}
+def reflect_in_chatwoot(phone: str, name: str, content: str, client_message_id: str, max_retries: int = 3):
+    body = {"phone": phone, "name": name or "Cliente WhatsApp", "content": content, "client_message_id": client_message_id}
+    wait = 0.5; last_err = None
+    for _ in range(max_retries):
+        try:
+            r = requests.post(REFLECT_URL, json=body, timeout=20)
+            if r.ok:
+                data = {}
+                try: data = r.json()
+                except Exception: pass
+                if data.get("ok") and data.get("messageId"):
+                    return True, data.get("messageId")
+            last_err = r.text
+        except Exception as e:
+            last_err = str(e)
+        time.sleep(wait); wait *= 1.6
+    return False, last_err
 
-async function getSourceId(contactId) {
-  try {
-    const { data } = await axios.get(`${BASE_URL}/${CHATWOOT_ACCOUNT_ID}/contacts/${contactId}`, { headers: cwHeaders });
-    return data.payload.contact_inboxes?.[0]?.source_id || '';
-  } catch (err) {
-    console.error('❌ No se pudo obtener source_id:', err.response?.data || err.message);
-    return '';
-  }
-}
+archivo_envios = "envios_hoy.xlsx"
+if not os.path.exists(archivo_envios):
+    pd.DataFrame(columns=["Fecha", "Número", "Nombre", "Estado", "CW_MessageID"]).to_excel(archivo_envios, index=False)
 
-async function getOrCreateConversation(contactId, sourceId) {
-  try {
-    const { data } = await axios.get(`${BASE_URL}/${CHATWOOT_ACCOUNT_ID}/contacts/${contactId}/conversations`, { headers: cwHeaders });
-    if (Array.isArray(data.payload) && data.payload.length > 0) return data.payload[0].id;
-    const resp = await axios.post(`${BASE_URL}/${CHATWOOT_ACCOUNT_ID}/conversations`, {
-      source_id: sourceId, inbox_id: CHATWOOT_INBOX_ID
-    }, { headers: cwHeaders });
-    return resp.data.id;
-  } catch (err) {
-    console.error('❌ Error creando conversación:', err.response?.data || err.message);
-    return null;
-  }
-}
+def registrar_envio_excel(numero, nombre, estado, cw_msg_id=None):
+    hoy = datetime.date.today().strftime('%Y-%m-%d')
+    nuevo = pd.DataFrame([{"Fecha": hoy, "Número": f"'{numero}", "Nombre": nombre, "Estado": estado, "CW_MessageID": cw_msg_id or ""}])
+    df = pd.read_excel(archivo_envios)
+    pd.concat([df, nuevo], ignore_index=True).to_excel(archivo_envios, index=False)
 
-async function waitForConversationReady(conversationId, attempts = 3, delayMs = 350) {
-  for (let i = 0; i < attempts; i++) {
-    try {
-      const check = await axios.get(`${BASE_URL}/${CHATWOOT_ACCOUNT_ID}/conversations/${conversationId}`, { headers: cwHeaders });
-      if (check.status === 200) return true;
-    } catch (_) {}
-    await new Promise(r => setTimeout(r, delayMs));
-  }
-  return false;
-}
+def enviar_mensaje(row, api_key, plantilla_col, telefono_col, nombre_col, pais_col, param1_col, param2_col, pausa_entre_envios=0.25):
+    try:
+        raw_number = f"{str(row[pais_col])}{str(row[telefono_col])}".replace(" ", "").replace("-", "")
+        chatwoot_number = normalizar_numero(f"+{raw_number}")
+        whatsapp_number = chatwoot_number
+        nombre = str(row[nombre_col]).strip() if pd.notna(row[nombre_col]) else ""
+        plantilla_nombre = str(row[plantilla_col]).strip()
 
-async function sendToChatwoot(conversationId, type, content, outgoing = false, maxRetries = 4) {
-  const payload = { message_type: outgoing ? 'outgoing' : 'incoming', private: false };
-  if (['image', 'document', 'audio', 'video'].includes(type)) {
-    payload.attachments = [{ file_type: type, file_url: content }];
-  } else {
-    payload.content = content;
-  }
+        if plantilla_nombre == "recordatorio_24_hrs":
+            mensaje_real = plantillas["recordatorio_24_hrs"]()
+            parameters = []
+        else:
+            p1 = str(row[param1_col]) if (param1_col != "(ninguno)" and pd.notna(row[param1_col])) else ""
+            p2 = str(row[param2_col]) if (param2_col != "(ninguno)" and pd.notna(row[param2_col])) else ""
+            mensaje_real = plantillas.get(plantilla_nombre, lambda x: f"Mensaje con parámetro: {x}")(p1)
+            parameters = []
+            if p1: parameters.append({"type": "text", "text": p1})
+            if p2: parameters.append({"type": "text", "text": p2})
 
-  let wait = 400; let lastErr;
-  for (let i = 0; i < maxRetries; i++) {
-    try {
-      const { data } = await axios.post(
-        `${BASE_URL}/${CHATWOOT_ACCOUNT_ID}/conversations/${conversationId}/messages`,
-        payload, { headers: cwHeaders }
-      );
-      return { ok: true, messageId: data.id };
-    } catch (err) {
-      const s = err.response?.status;
-      const retriable = s === 404 || s === 422 || s === 409;
-      lastErr = err.response?.data || err.message;
-      if (!retriable) break;
-      await new Promise(r => setTimeout(r, wait));
-      wait = Math.min(wait * 1.6, 2000);
-    }
-  }
-  return { ok: false, error: lastErr };
-}
+        payload = {
+            "messaging_product": "whatsapp",
+            "to": whatsapp_number.replace("+", ""),
+            "type": "template",
+            "template": { "name": plantilla_nombre, "language": {"code": "es_MX"}, "components": [] }
+        }
+        if parameters:
+            payload["template"]["components"].append({ "type": "body", "parameters": parameters })
 
-// ============== WEBHOOK ENTRANTE (360dialog -> Chatwoot) ==============
-app.post('/webhook', async (req, res) => {
-  try {
-    const entry   = req.body.entry?.[0];
-    const changes = entry?.changes?.[0]?.value;
-    const rawPhone = `+${changes?.contacts?.[0]?.wa_id}`;
-    const phone   = normalizarNumero(rawPhone);
-    const name    = changes?.contacts?.[0]?.profile?.name;
-    const msg     = changes?.messages?.[0];
+        r = post_whatsapp(api_key, payload)
+        enviado = r.status_code == 200
+        estado = "✅ WhatsApp enviado" if enviado else f"❌ WhatsApp falló ({r.status_code})"
 
-    if (!phone || !msg || msg.from_me) return res.sendStatus(200);
+        cw_msg_id = ""
+        client_message_id = gen_client_message_id(whatsapp_number, mensaje_real)
+        ok_reflect, info = reflect_in_chatwoot(chatwoot_number, nombre or "Cliente WhatsApp", mensaje_real, client_message_id)
+        if ok_reflect:
+            cw_msg_id = info
+            estado += " | 🟦 Reflejado"
+        else:
+            estado += " | ⚠️ No reflejado: " + (str(info)[:140] + "..." if info else "sin detalle")
 
-    const messageId = msg.id;
-    if (processedInboundIds.has(messageId)) return res.sendStatus(200);
-    processedInboundIds.add(messageId);
+        registrar_envio_excel(whatsapp_number, nombre, estado, cw_msg_id)
+        time.sleep(pausa_entre_envios)
+        return whatsapp_number, estado
 
-    const contact = await findOrCreateContact(phone, name);
-    if (!contact?.id) return res.sendStatus(500);
+    except Exception as e:
+        nombre = (str(row[nombre_col]).strip() if nombre_col in row else "Desconocido")
+        estado = f"❌ Error general: {e}"
+        registrar_envio_excel("N/D", nombre, estado)
+        return nombre, estado
 
-    const sourceId = contact.contact_inboxes?.[0]?.source_id || await getSourceId(contact.id);
-    if (!sourceId) return res.sendStatus(500);
+file = st.file_uploader("📁 Sube tu archivo Excel", type=["xlsx"])
 
-    const conversationId = await getOrCreateConversation(contact.id, sourceId);
-    if (!conversationId) return res.sendStatus(500);
+if api_key and file:
+    df = pd.read_excel(file)
+    df.columns = df.columns.str.strip()
+    st.success(f"Archivo cargado con {len(df)} registros.")
+    columnas = df.columns.tolist()
 
-    const type    = msg.type;
-    const content = msg[type]?.body || msg[type]?.caption || msg[type]?.link || '[media]';
+    plantilla_col = st.selectbox("🧩 Columna plantilla:", columnas)
+    telefono_col  = st.selectbox("📱 Teléfono:", columnas)
+    nombre_col    = st.selectbox("📇 Nombre:", columnas)
+    pais_col      = st.selectbox("🌎 Código país (sin '+'):", columnas)
+    param1_col    = st.selectbox("🔢 Parámetro {{1}}:", ["(ninguno)"] + columnas)
+    param2_col    = st.selectbox("🔢 Parámetro {{2}} (opcional):", ["(ninguno)"] + columnas)
 
-    if (type === 'text') {
-      await sendToChatwoot(conversationId, 'text', msg.text.body, false);
-    } else if (['image', 'document', 'audio', 'video'].includes(type)) {
-      await sendToChatwoot(conversationId, type, content, false);
-    } else if (type === 'location') {
-      const { latitude, longitude } = msg.location;
-      await sendToChatwoot(conversationId, 'text', `📍 https://maps.google.com/?q=${latitude},${longitude}`, false);
-    } else {
-      await sendToChatwoot(conversationId, 'text', '[Contenido no soportado]', false);
-    }
+    modo_seguro = st.toggle("🛡️ Modo seguro (serializar envíos)", value=True)
+    max_workers = 1 if modo_seguro else st.slider("⚙️ Paralelismo (máx. 3 recomendado)", 1, 10, 3)
+    pausa_entre_envios = st.slider("⏱️ Pausa entre envíos (seg)", 0.0, 1.0, 0.25, 0.05)
 
-    try {
-      await axios.post(N8N_WEBHOOK_URL, { phone, name, type, content }, { httpsAgent: new https.Agent({ rejectUnauthorized: false }) });
-    } catch (n8nErr) { console.error('❌ Error n8n:', n8nErr.message); }
+    if st.button("🚀 Enviar mensajes") and not st.session_state["ya_ejecuto"]:
+        st.session_state["ya_ejecuto"] = True
+        resultados = []
 
-    res.sendStatus(200);
-  } catch (err) {
-    console.error('❌ Webhook error:', err.message);
-    res.sendStatus(500);
-  }
-});
+        if max_workers == 1:
+            for _, row in df.iterrows():
+                numero, estado = enviar_mensaje(row, api_key, plantilla_col, telefono_col, nombre_col, pais_col, param1_col, param2_col, pausa_entre_envios)
+                resultados.append((numero, estado))
+                (st.success if "✅" in estado else st.error)(f"{estado} -> {numero}")
+        else:
+            with ThreadPoolExecutor(max_workers=max_workers) as executor:
+                futures = [
+                    executor.submit(enviar_mensaje, row, api_key, plantilla_col, telefono_col, nombre_col, pais_col, param1_col, param2_col, pausa_entre_envios)
+                    for _, row in df.iterrows()
+                ]
+                for f in as_completed(futures):
+                    numero, estado = f.result()
+                    resultados.append((numero, estado))
+                    (st.success if "✅" in estado else st.error)(f"{estado} -> {numero}")
 
-// ============== OUTBOUND (Chatwoot -> WhatsApp) ==============
-app.post('/outbound', async (req, res) => {
-  const msg = req.body;
-  if (!msg?.message_type || msg.message_type !== 'outgoing' || msg.content?.includes('[streamlit]')) {
-    return res.sendStatus(200);
-  }
-
-  const messageId = msg.id;
-  if (processedOutboundIds.has(messageId)) return res.sendStatus(200);
-  processedOutboundIds.add(messageId);
-
-  const rawNumber = msg.conversation?.meta?.sender?.phone_number?.replace('+', '');
-  const number    = normalizarNumero(`+${rawNumber}`).replace('+', '');
-  const content   = msg.content;
-  if (!number || !content) return res.sendStatus(200);
-
-  try {
-    await axios.post(D360_API_URL, {
-      messaging_product: 'whatsapp',
-      to: number,
-      type: 'text',
-      text: { body: content }
-    }, { headers: { 'D360-API-KEY': D360_API_KEY, 'Content-Type': 'application/json' } });
-    res.sendStatus(200);
-  } catch (err) {
-    console.error('❌ Error enviando a WhatsApp:', err.response?.data || err.message);
-    res.sendStatus(500);
-  }
-});
-
-// ============== REFLEJO DESDE STREAMLIT -> CHATWOOT ==============
-/**
- * Espera JSON:
- * { phone: "+521...", name: "Nombre", content: "Texto", client_message_id: "sha1|uuid" }
- * Devuelve: { ok: true, messageId, conversationId }
- */
-app.post('/send-chatwoot-message', async (req, res) => {
-  try {
-    const { phone, name, content, client_message_id } = req.body || {};
-    if (!phone || !content) return res.status(400).json({ ok: false, error: 'phone y content son requeridos' });
-
-    const normalizedPhone = normalizarNumero(String(phone).trim());
-    if (client_message_id && processedClientMsgIds.has(client_message_id)) {
-      return res.json({ ok: true, dedup: true });
-    }
-
-    const contact = await findOrCreateContact(normalizedPhone, name || 'Cliente WhatsApp');
-    if (!contact?.id) return res.status(500).json({ ok: false, error: 'No se pudo crear/recuperar contacto' });
-
-    const sourceId = contact.contact_inboxes?.[0]?.source_id || await getSourceId(contact.id);
-    if (!sourceId) return res.status(500).json({ ok: false, error: 'No se pudo obtener source_id' });
-
-    let conversationId = await getOrCreateConversation(contact.id, sourceId);
-    if (!conversationId) return res.status(500).json({ ok: false, error: 'No se pudo crear conversación' });
-
-    await waitForConversationReady(conversationId, 3, 300);
-
-    const sent = await sendToChatwoot(conversationId, 'text', `${content}[streamlit]`, true, 4);
-    if (!sent.ok) return res.status(502).json({ ok: false, error: 'No se pudo guardar mensaje en Chatwoot' });
-
-    try {
-      await axios.put(`${BASE_URL}/${CHATWOOT_ACCOUNT_ID}/conversations/${conversationId}`, { status: 'open' }, { headers: cwHeaders });
-      await axios.post(`${BASE_URL}/${CHATWOOT_ACCOUNT_ID}/conversations/${conversationId}/assignments`, { assignee_id: null }, { headers: cwHeaders });
-    } catch (e) { console.warn('⚠️ No se pudo forzar visibilidad:', e.message); }
-
-    if (client_message_id) processedClientMsgIds.add(client_message_id);
-    return res.json({ ok: true, messageId: sent.messageId, conversationId });
-
-  } catch (err) {
-    console.error('❌ Error en /send-chatwoot-message:', err.message);
-    res.status(500).json({ ok: false, error: 'Error interno al reflejar' });
-  }
-});
-
-app.listen(PORT, () => console.log(`🚀 Webhook corriendo en puerto ${PORT}`));
+if os.path.exists(archivo_envios):
+    try:
+        df_final = pd.read_excel(archivo_envios)
+        output = BytesIO(); df_final.to_excel(output, index=False)
+        st.download_button("📥 Descargar Excel de envíos", output.getvalue(), "envios_hoy.xlsx",
+                           "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+    except Exception as e:
+        st.warning(f"⚠️ No se pudo preparar archivo para descargar: {e}")

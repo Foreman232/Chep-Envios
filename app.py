@@ -15,8 +15,7 @@ if "ya_ejecuto" not in st.session_state:
     st.session_state["ya_ejecuto"] = False
 
 # ========= CONFIG =========
-# Si tienes NGINX/subdominio, cámbialo por https://webhook.chep-tarimas.store/send-chatwoot-message
-REFLECT_URL = "https://srv904439.hstgr.cloud:10000/send-chatwoot-message"
+REFLECT_URL = "https://webhook-chatwoots.onrender.com/send-chatwoot-message"
 WHATSAPP_API_URL = "https://waba-v2.360dialog.io/messages"
 
 api_key = st.text_input("🔐 Ingresa tu API Key de 360dialog", type="password")
@@ -169,3 +168,4 @@ if os.path.exists(archivo_envios):
                            "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
     except Exception as e:
         st.warning(f"⚠️ No se pudo preparar archivo para descargar: {e}")
+

@@ -4,6 +4,8 @@ import requests
 import datetime
 import os
 from io import BytesIO
+from concurrent.futures import ThreadPoolExecutor, as_completed
+import time
 
 st.set_page_config(page_title="📨 Envío Masivo WhatsApp", layout="centered")
 st.title("📨 Envío Masivo de WhatsApp con Plantillas")
@@ -36,7 +38,92 @@ archivo_envios = "envios_hoy.xlsx"
 if not os.path.exists(archivo_envios):
     pd.DataFrame(columns=["Fecha", "Número", "Nombre", "Estado"]).to_excel(archivo_envios, index=False)
 
-# Subida de archivo Excel
+# --- Función de envío de un mensaje ---
+def enviar_mensaje(row, api_key, plantilla_col, telefono_col, nombre_col, pais_col, param1_col, param2_col):
+    try:
+        raw_number = f"{str(row[pais_col])}{str(row[telefono_col])}".replace(" ", "").replace("-", "")
+        chatwoot_number = normalizar_numero(f"+{raw_number}")
+        whatsapp_number = chatwoot_number
+        nombre = str(row[nombre_col]).strip()
+        plantilla_nombre = str(row[plantilla_col]).strip()
+
+        parameters = []
+        param1 = ""
+        param2 = ""
+
+        if plantilla_nombre == "recordatorio_24_hrs":
+            mensaje_real = plantillas["recordatorio_24_hrs"]()
+            param1 = nombre or "Cliente WhatsApp"
+        else:
+            if param1_col != "(ninguno)":
+                param1 = str(row[param1_col])
+                parameters.append({"type": "text", "text": param1})
+            if param2_col != "(ninguno)":
+                param2 = str(row[param2_col])
+                parameters.append({"type": "text", "text": param2})
+            mensaje_real = plantillas.get(plantilla_nombre, lambda x: f"Mensaje enviado con parámetro: {x}")(param1)
+
+        # Payload para WhatsApp
+        payload = {
+            "messaging_product": "whatsapp",
+            "to": whatsapp_number.replace("+", ""),
+            "type": "template",
+            "template": {
+                "name": plantilla_nombre,
+                "language": {"code": "es_MX"},
+                "components": []
+            }
+        }
+
+        if parameters:
+            payload["template"]["components"].append({
+                "type": "body",
+                "parameters": parameters
+            })
+
+        headers = {
+            "Content-Type": "application/json",
+            "D360-API-KEY": api_key
+        }
+
+        r = requests.post("https://waba-v2.360dialog.io/messages", headers=headers, json=payload, timeout=15)
+        enviado = r.status_code == 200
+        estado = "✅ Enviado" if enviado else f"❌ Falló ({r.status_code})"
+
+        # Guardar en Excel
+        hoy = datetime.date.today().strftime('%Y-%m-%d')
+        nuevo_registro = pd.DataFrame([{
+            "Fecha": hoy,
+            "Número": f"'{whatsapp_number}",
+            "Nombre": nombre,
+            "Estado": estado
+        }])
+        df_existente = pd.read_excel(archivo_envios)
+        df_actualizado = pd.concat([df_existente, nuevo_registro], ignore_index=True)
+        df_actualizado.to_excel(archivo_envios, index=False)
+
+        # Reflejar en Chatwoot (con 3 reintentos)
+        chatwoot_payload = {
+            "phone": chatwoot_number,
+            "name": nombre or "Cliente WhatsApp",
+            "content": mensaje_real
+        }
+        for intento in range(3):
+            try:
+                cw = requests.post("https://webhook-chatwoots.onrender.com/send-chatwoot-message", json=chatwoot_payload, timeout=15)
+                if cw.status_code == 200:
+                    break
+                else:
+                    time.sleep(1)  # esperar un poco y reintentar
+            except Exception:
+                time.sleep(1)
+
+        return whatsapp_number, estado
+
+    except Exception as e:
+        return row.get(nombre_col, "Desconocido"), f"❌ Error general: {e}"
+
+# --- Subida de archivo Excel ---
 file = st.file_uploader("📁 Sube tu archivo Excel", type=["xlsx"])
 
 if api_key and file:
@@ -54,99 +141,26 @@ if api_key and file:
 
     if st.button("🚀 Enviar mensajes") and not st.session_state["ya_ejecuto"]:
         st.session_state["ya_ejecuto"] = True
+        resultados = []
 
-        for idx, row in df.iterrows():
-            if "enviado" in df.columns and row.get("enviado") == True:
-                continue
+        with ThreadPoolExecutor(max_workers=10) as executor:  # hasta 10 en paralelo
+            futures = [
+                executor.submit(
+                    enviar_mensaje,
+                    row, api_key,
+                    plantilla_col, telefono_col, nombre_col, pais_col,
+                    param1_col, param2_col
+                )
+                for _, row in df.iterrows()
+            ]
 
-            raw_number = f"{str(row[pais_col])}{str(row[telefono_col])}".replace(" ", "").replace("-", "")
-            chatwoot_number = normalizar_numero(f"+{raw_number}")
-            whatsapp_number = chatwoot_number
-            nombre = str(row[nombre_col]).strip()
-            plantilla_nombre = str(row[plantilla_col]).strip()
-
-            parameters = []
-            param1 = ""
-            param2 = ""
-
-            if plantilla_nombre == "recordatorio_24_hrs":
-                mensaje_real = plantillas["recordatorio_24_hrs"]()
-                param1 = nombre or "Cliente WhatsApp"
-            else:
-                if param1_col != "(ninguno)":
-                    param1 = str(row[param1_col])
-                    parameters.append({"type": "text", "text": param1})
-                if param2_col != "(ninguno)":
-                    param2 = str(row[param2_col])
-                    parameters.append({"type": "text", "text": param2})
-                mensaje_real = plantillas.get(plantilla_nombre, lambda x: f"Mensaje enviado con parámetro: {x}")(param1)
-
-            # Payload para WhatsApp
-            payload = {
-                "messaging_product": "whatsapp",
-                "to": whatsapp_number.replace("+", ""),
-                "type": "template",
-                "template": {
-                    "name": plantilla_nombre,
-                    "language": {"code": "es_MX"},
-                    "components": []
-                }
-            }
-
-            if parameters:
-                payload["template"]["components"].append({
-                    "type": "body",
-                    "parameters": parameters
-                })
-
-            headers = {
-                "Content-Type": "application/json",
-                "D360-API-KEY": api_key
-            }
-
-            r = requests.post("https://waba-v2.360dialog.io/messages", headers=headers, json=payload)
-            enviado = r.status_code == 200
-            df.at[idx, "enviado"] = enviado
-            estado = "✅ Enviado" if enviado else f"❌ Falló ({r.status_code})"
-
-            if enviado:
-                st.success(f"✅ WhatsApp enviado: {whatsapp_number}")
-            else:
-                st.error(f"❌ WhatsApp error ({whatsapp_number}): {r.text}")
-
-            # Guardar en Excel
-            try:
-                hoy = datetime.date.today().strftime('%Y-%m-%d')
-                df_existente = pd.read_excel(archivo_envios)
-
-                nuevo_registro = pd.DataFrame([{
-                    "Fecha": hoy,
-                    "Número": f"'{whatsapp_number}",
-                    "Nombre": nombre,
-                    "Estado": estado
-                }])
-
-                df_actualizado = pd.concat([df_existente, nuevo_registro], ignore_index=True)
-                df_actualizado.to_excel(archivo_envios, index=False)
-                st.info(f"📊 Registrado en {archivo_envios}")
-            except Exception as e:
-                st.warning(f"⚠️ No se pudo registrar el envío: {e}")
-
-            # Reflejar en Chatwoot
-            chatwoot_payload = {
-                "phone": chatwoot_number,
-                "name": nombre or "Cliente WhatsApp",
-                "content": mensaje_real
-            }
-
-            try:
-                cw = requests.post("https://webhook-chatwoots.onrender.com/send-chatwoot-message", json=chatwoot_payload)
-                if cw.status_code == 200:
-                    st.info(f"📥 Reflejado en Chatwoot: {chatwoot_number}")
+            for future in as_completed(futures):
+                numero, estado = future.result()
+                resultados.append((numero, estado))
+                if "✅" in estado:
+                    st.success(f"✅ WhatsApp enviado: {numero}")
                 else:
-                    st.warning(f"⚠️ Chatwoot error ({chatwoot_number}): {cw.text}")
-            except Exception as e:
-                st.error(f"❌ Error al reflejar en Chatwoot: {e}")
+                    st.error(f"{estado} -> {numero}")
 
 # 📥 Botón para descargar el Excel de resultados
 if os.path.exists(archivo_envios):

@@ -111,7 +111,6 @@ def enviar_mensaje(row, api_key, plantilla_col, telefono_col, nombre_col, pais_c
         for intento in range(3):
             try:
                 cw = requests.post(
-                    "cw = requests.post(
                     "https://finalechep.onrender.com/send-chatwoot-message",
                     json=chatwoot_payload,
                     timeout=20
@@ -155,8 +154,7 @@ if api_key and file:
         st.session_state["ya_ejecuto"] = True
         resultados = []
 
-        # PATCH: envío serial (más seguro) — si necesitas velocidad, súbelo a 3
-        with ThreadPoolExecutor(max_workers=1) as executor:  # antes: 10
+        with ThreadPoolExecutor(max_workers=1) as executor:
             futures = [
                 executor.submit(
                     enviar_mensaje,

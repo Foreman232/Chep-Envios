@@ -34,7 +34,7 @@ def normalizar_numero(phone):
     return phone
 
 # Archivo donde se guardan los resultados
-archivo_envios = "envios_hoy.xlsx"
+archivo_envios = "envios_resultados.xlsx""
 try:
     if not os.path.exists(archivo_envios):
         pd.DataFrame(columns=["Fecha", "Número", "Nombre", "Estado"]).to_excel(archivo_envios, index=False)

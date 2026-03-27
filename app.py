@@ -35,7 +35,12 @@ def normalizar_numero(phone):
 
 # Archivo donde se guardan los resultados
 archivo_envios = "envios_hoy.xlsx"
-if not os.path.exists(archivo_envios):
+try:
+    if not os.path.exists(archivo_envios):
+        pd.DataFrame(columns=["Fecha", "Número", "Nombre", "Estado"]).to_excel(archivo_envios, index=False)
+    else:
+        pd.read_excel(archivo_envios)  # verifica que no esté corrupto
+except:
     pd.DataFrame(columns=["Fecha", "Número", "Nombre", "Estado"]).to_excel(archivo_envios, index=False)
 
 # --- Función de envío de un mensaje ---
@@ -98,7 +103,10 @@ def enviar_mensaje(row, api_key, plantilla_col, telefono_col, nombre_col, pais_c
             "Nombre": nombre,
             "Estado": estado
         }])
-        df_existente = pd.read_excel(archivo_envios)
+        try:
+            df_existente = pd.read_excel(archivo_envios)
+        except:
+            df_existente = pd.DataFrame(columns=["Fecha", "Número", "Nombre", "Estado"])
         df_actualizado = pd.concat([df_existente, nuevo_registro], ignore_index=True)
         df_actualizado.to_excel(archivo_envios, index=False)
 
@@ -119,14 +127,13 @@ def enviar_mensaje(row, api_key, plantilla_col, telefono_col, nombre_col, pais_c
                     try:
                         data = cw.json()
                         if data.get("ok") and data.get("messageId"):
-                            break  # ACK duro: solo salir si Chatwoot devolvió messageId
+                            break
                     except Exception:
                         pass
-                time.sleep(0.8)  # pequeño backoff antes de reintentar
+                time.sleep(0.8)
             except Exception:
                 time.sleep(0.8)
 
-        # Pausa corta para evitar condiciones de carrera en la creación/primer mensaje
         time.sleep(0.35)
 
         return whatsapp_number, estado
